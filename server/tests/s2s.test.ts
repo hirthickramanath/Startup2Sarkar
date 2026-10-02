@@ -77,27 +77,37 @@ describe('Google ID-token verification', () => {
       await db.query(`INSERT INTO users (id, email, password_hash, role, name, designation, department_id) VALUES ('USR-GOOGLE-GOV','official@example.com',$1,'government','Official','Officer','DEPT-G') ON CONFLICT (id) DO NOTHING`, [await hashPassword('Xx#12345678!')]);
     });
     after(async () => { delete process.env.GOOGLE_CLIENT_ID; delete process.env.AUTH_RATE_MAX; await app.close(); });
-    const post = (credential: string, role: string) => app.inject({ method: 'POST', url: '/api/v1/auth/google', payload: { credential, role } });
+    const post = (credential: string, role?: string) => app.inject({ method: 'POST', url: '/api/v1/auth/google', payload: role ? { credential, role } : { credential } });
 
-    it('creates a PENDING startup account on first Google sign-in', async () => {
-      const res = await post(sign({ email: 'new.founder@example.com', sub: 'g-new' }), 'startup');
+    it('does NOT create an account on first Google sign-in: the person must finish onboarding first', async () => {
+      const res = await post(sign({ email: 'new.founder@example.com', sub: 'g-new' }), undefined as any);
       assert.strictEqual(res.statusCode, 200);
-      const body = JSON.parse(res.body);
-      assert.strictEqual(body.isNewAccount, true); assert.strictEqual(body.user.role, 'startup');
+      assert.strictEqual(JSON.parse(res.body).needsOnboarding, true);
+      assert.ok(res.cookies.some((c: any) => c.name === 's2s_signup'), 'a short-lived signed sign-up cookie is set');
+      const n = await db.query(`SELECT COUNT(*) c FROM users WHERE LOWER(email) = 'new.founder@example.com'`);
+      assert.strictEqual(Number(n.rows[0].c), 0, 'nothing is stored until onboarding completes');
+    });
+    it('completes onboarding as a startup, then signs the same Google account in again without duplicating it', async () => {
+      const first = await post(sign({ email: 'new.founder@example.com', sub: 'g-new' }), undefined as any);
+      const cookie = (first.cookies.find((c: any) => c.name === 's2s_signup') as any).value;
+      const done = await app.inject({ method: 'POST', url: '/api/v1/auth/onboarding', cookies: { s2s_signup: cookie }, payload: { role: 'startup', name: 'New Founder', phone: '9876543210', startupName: 'Founder Labs', sector: 'CleanTech', dpiitNumber: 'DIPP55512', acceptTerms: true } });
+      assert.strictEqual(done.statusCode, 201, done.body);
+      const body = JSON.parse(done.body);
+      assert.strictEqual(body.user.role, 'startup'); assert.strictEqual(body.user.status, 'ACTIVE');
       const org = await db.query(`SELECT verification_status FROM organizations WHERE id = $1`, [body.user.organizationId]);
       assert.strictEqual(org.rows[0].verification_status, 'PENDING');
-    });
-    it('signs the same Google account in again without duplicating it', async () => {
-      const res = await post(sign({ email: 'new.founder@example.com', sub: 'g-new' }), 'startup');
-      assert.strictEqual(JSON.parse(res.body).isNewAccount, false);
-      const n = await db.query(`SELECT COUNT(*) c FROM users WHERE google_sub = 'g-new'`);
+      const again = await post(sign({ email: 'new.founder@example.com', sub: 'g-new' }), undefined as any);
+      assert.strictEqual(JSON.parse(again.body).success, true); assert.strictEqual(JSON.parse(again.body).needsOnboarding, undefined);
+      const n = await db.query(`SELECT COUNT(*) c FROM auth_identities WHERE provider = 'google' AND provider_user_id = 'g-new'`);
       assert.strictEqual(Number(n.rows[0].c), 1);
     });
-    it('does NOT self-provision government/finance/inspector/admin accounts', async () => {
-      for (const role of ['government', 'finance', 'inspector', 'admin']) {
-        const res = await post(sign({ email: `rando-${role}@example.com`, sub: `g-${role}` }), role);
-        assert.strictEqual(res.statusCode, 401);
-      }
+    it('never lets anyone sign themselves up as an administrator', async () => {
+      const first = await post(sign({ email: 'wannabe.admin@example.com', sub: 'g-wannabe' }), undefined as any);
+      const cookie = (first.cookies.find((c: any) => c.name === 's2s_signup') as any).value;
+      const res = await app.inject({ method: 'POST', url: '/api/v1/auth/onboarding', cookies: { s2s_signup: cookie }, payload: { role: 'admin', name: 'Mallory', phone: '9876543210', acceptTerms: true } });
+      assert.strictEqual(res.statusCode, 400);
+      const n = await db.query(`SELECT COUNT(*) c FROM users WHERE LOWER(email) = 'wannabe.admin@example.com'`);
+      assert.strictEqual(Number(n.rows[0].c), 0);
     });
     it('lets an admin-provisioned official sign in with Google, but only through their own role gateway', async () => {
       assert.strictEqual((await post(sign({ email: 'official@example.com', sub: 'g-official' }), 'government')).statusCode, 200);
@@ -202,6 +212,15 @@ describe('Assistant is fenced in: site data + market snapshot only, no third-par
       }
     });
     assert.strictEqual(calls, 0, 'off-topic questions must not reach Gemini');
+  });
+
+  it('answers greetings and thanks locally without calling the model', async () => {
+    let calls = 0;
+    await withFetch(async () => { calls++; return ok('model reply')(); }, async () => {
+      for (const q of ['Hey', 'hi', 'Hello!', 'thanks', 'good morning']) { const r = await chat(q); assert.strictEqual(r.mode, 'local', q); assert.notStrictEqual(r.reply, 'model reply'); }
+      const hello = await chat('Hey'); assert.match(hello.reply, /^Hello Sam/);
+    });
+    assert.strictEqual(calls, 0, 'small talk must not reach Gemini');
   });
 
   it('sends exactly one request, to Google\'s Gemini endpoint only, with NO tools (no search grounding / URL context / code execution)', async () => {

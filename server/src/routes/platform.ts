@@ -195,6 +195,7 @@ export async function publicRoutes(app: FastifyInstance, opts: { db: DatabaseAda
     return reply.send({
       appName: 'Startup2Sarkar',
       googleClientId: process.env.GOOGLE_CLIENT_ID || null,
+      githubEnabled: !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET),
       aiMode: process.env.GEMINI_API_KEY ? 'llm' : 'local'
     });
   });

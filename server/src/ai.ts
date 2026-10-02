@@ -49,7 +49,7 @@ export interface FinanceCopilotResult {
   model_name: string;
 }
 
-export type Role = 'government' | 'startup' | 'inspector' | 'finance' | 'admin';
+export type Role = 'government' | 'startup' | 'inspector' | 'finance' | 'admin' | 'investor';
 
 export interface ChatTurn {
   role: 'user' | 'assistant';
@@ -291,7 +291,8 @@ const ROLE_SUGGESTIONS: Record<Role, string[]> = {
   startup: ['What is my verification status?', 'Which challenges are open?', 'How do I submit a proposal?', 'Status of my payment claims'],
   inspector: ['Which pilots are assigned to me?', 'How do I verify KPIs?', 'What does an inspection involve?'],
   finance: ['What needs my attention?', 'How is net payable calculated?', 'Any open anomalies?', 'Show budget utilisation'],
-  admin: ['Who is waiting for verification?', 'Is the audit chain intact?', 'How do users sign in?', 'Show platform summary']
+  admin: ['Who is waiting for verification?', 'Is the audit chain intact?', 'How do users sign in?', 'Show platform summary'],
+  investor: ['How do I request an intro to a startup?', 'Why can\'t I see the startup list?', 'What do startups see about me?']
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -783,6 +784,12 @@ export class SovereignAiProvider implements AiProvider {
   async chat(input: ChatInput): Promise<ChatResult> {
     const safe: ChatInput = { ...input, message: this.sanitizeUntrustedInput(input.message).slice(0, 1500) };
     const local = localAssistantReply(safe);
+
+    // Greetings and thanks never need a model: answer them locally (instant, free, and no stiff refusals)
+    const shortMsg = safe.message.trim().toLowerCase().replace(/[!.?,\s]+$/g, '');
+    if (/^(hi+|hello|hey+|heya|yo|namaste|namaskar|vanakkam|hola|good (morning|afternoon|evening)|sup|thanks|thank you|thx|ty|ok(ay)?|cool|nice|got it|bye|goodbye)\b/.test(shortMsg) && shortMsg.split(/\s+/).length <= 4) {
+      return { ...local, model: 'S2S Local Advisory Engine', mode: 'local', tokens: 0 };
+    }
 
     // Scope gate: an off-topic question never reaches the model (no cost, no drift, nothing to leak).
     // Short follow-ups ("and for EUR?") stay in scope when there is an ongoing conversation.

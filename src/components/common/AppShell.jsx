@@ -4,8 +4,9 @@ import {
   Building, Compass, FileText, CheckSquare, Shield, 
   CreditCard, AlertTriangle, Users, Settings, Bell, 
   Search, Cpu, ChevronRight, Menu, X, LogOut, 
-  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers
+  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers, TrendingUp
 } from 'lucide-react';
+import { Logo, ThemeControls } from './ui';
 import { GlobalSearchModal } from './GlobalSearchModal';
 import { AssistantDrawer } from './AssistantDrawer';
 import { ProfileMenu } from './ProfileMenu';
@@ -69,9 +70,17 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           { label: 'Stalled Projects & Recovery', route: '/finance/stalled', icon: Shield },
           { label: 'Audit Case Files', route: '/finance/reports', icon: FileText }
         ];
+      case 'investor':
+        return [
+          { label: 'Investor Dashboard', route: '/investor/dashboard', icon: Building },
+          { label: 'Startup Directory', route: '/investor/startups', icon: Compass },
+          { label: 'My Introductions', route: '/investor/intros', icon: Layers },
+          { label: 'Profile', route: '/investor/profile', icon: Users }
+        ];
       case 'admin':
         return [
           { label: 'Platform Console', route: '/admin/dashboard', icon: Building },
+          { label: 'Access Requests', route: '/admin/access-requests', icon: CheckSquare, count: (state.accessRequests || []).length },
           { label: 'User Directory', route: '/admin/users', icon: Users },
           { label: 'Departments', route: '/admin/departments', icon: Layers },
           { label: 'AI Configuration', route: '/admin/ai', icon: Cpu },
@@ -111,20 +120,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
       }}>
         {/* Left: Branding & National Emblem Indicator */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 800, fontSize: '0.95rem', letterSpacing: '-0.02em' }}>
-            <span style={{ 
-              background: '#2563eb', 
-              color: '#ffffff', 
-              padding: '0.2rem 0.5rem', 
-              borderRadius: '4px',
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.78rem',
-              fontWeight: 800
-            }}>
-              S2S
-            </span>
-            <span>Startup2Sarkar</span>
-          </div>
+          <Logo size={22} nameSize={15} tone="onDark" />
           <span style={{ opacity: 0.4 }}>|</span>
           <span style={{ fontSize: '0.74rem', color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
             <span>Innovation procurement platform</span>
@@ -226,6 +222,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           </button>
 
           {/* Notifications Dropdown */}
+          <ThemeControls compact />
           <div style={{ position: 'relative' }}>
             <button
               type="button"
@@ -426,7 +423,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
                       padding: '0.55rem 0.75rem',
                       borderRadius: 'var(--radius-sm)',
                       background: isActive ? 'var(--gov-navy-50)' : 'transparent',
-                      color: isActive ? 'var(--gov-navy-800)' : 'var(--slate-700)',
+                      color: isActive ? 'var(--ink)' : 'var(--slate-700)',
                       border: 'none',
                       fontWeight: isActive ? 700 : 500,
                       fontSize: '0.82rem',
@@ -442,7 +439,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-                      <Icon size={16} color={isActive ? 'var(--gov-navy-700)' : 'var(--slate-500)'} />
+                      <Icon size={16} color={isActive ? 'var(--accent-text)' : 'var(--slate-500)'} />
                       <span>{item.label}</span>
                     </div>
 

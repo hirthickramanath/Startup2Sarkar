@@ -22,6 +22,8 @@ import { pilotRoutes } from './routes/pilots';
 import { financeRoutes } from './routes/finance';
 import { adminRoutes } from './routes/admin';
 import { assistantRoutes } from './routes/assistant';
+import { identityRoutes } from './routes/identity';
+import { networkRoutes } from './routes/network';
 import { publicRoutes, fileRoutes, notificationRoutes, searchRoutes, auditViewRoutes } from './routes/platform';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +33,8 @@ export interface AppOptions {
   aiProvider?: AiProvider;
   /** Test hook: supply Google's signing keys instead of fetching them over the network */
   jwksFetcher?: JwksFetcher;
+  /** Test hook: replace the network client used to talk to GitHub */
+  githubFetch?: typeof fetch;
   /** Directory of the built SPA; defaults to <repo>/dist */
   staticDir?: string;
 }
@@ -136,7 +140,9 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
   // 4. API ───────────────────────────────────────────────────────────────
   app.register(async (api) => {
-    api.register(authRoutes, { prefix: '/auth', db, auditService, jwksFetcher: options.jwksFetcher });
+    api.register(authRoutes, { prefix: '/auth', db, auditService });
+    api.register(identityRoutes, { prefix: '/auth', db, auditService, jwksFetcher: options.jwksFetcher, githubFetch: options.githubFetch });
+    api.register(networkRoutes, { prefix: '/network', db, auditService });
     api.register(challengeRoutes, { prefix: '/challenges', db, auditService, aiProvider });
     api.register(proposalRoutes, { prefix: '/proposals', db, auditService, aiProvider });
     api.register(pilotRoutes, { prefix: '/pilots', db, auditService });

@@ -135,7 +135,7 @@ export function StartupDashboard() {
             <span>AI Match: Recommended Ministry Challenges</span>
           </div>
           <span style={{ fontSize: '0.75rem', color: 'var(--slate-500)' }}>
-            Informational relevance match based on your DPIIT HealthTech credentials (Not a procurement guarantee)
+            Informational relevance match based on your registered sector (not a procurement guarantee)
           </span>
         </div>
 

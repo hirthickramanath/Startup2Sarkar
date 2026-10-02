@@ -19,8 +19,11 @@ export function ProposalCreate() {
   const [challengeId, setChallengeId] = useState(query.get('challenge') || '');
   const challenge = open.find((c) => c.id === challengeId);
   const [busy, run] = useBusy();
-  const [form, setForm] = useState({ solutionTitle: '', summary: '', technicalApproach: '', deploymentPlan: '', timeline: '', cost: '', scaleupCost: '', deployments: '', certifications: '' });
+  const [form, setForm] = useState({ solutionTitle: '', summary: '', technicalApproach: '', deploymentPlan: '', timeline: '', cost: '', scaleupCost: '', deployments: '', certifications: '', links: [{ label: '', url: '' }, { label: '', url: '' }, { label: '', url: '' }] });
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const setLink = (i, k) => (e) => setForm((f) => ({ ...f, links: f.links.map((l, j) => (j === i ? { ...l, [k]: e.target.value } : l)) }));
+  const filledLinks = form.links.filter((l) => l.url.trim() || l.label.trim());
+  const badLink = filledLinks.find((l) => l.label.trim().length < 2 || !/^https:\/\//i.test(l.url.trim()));
 
   const alreadyBid = state.proposals.some((p) => p.challengeId === challengeId && p.startupId === myStartup.id);
   const verified = myStartup.verificationStatus === 'VERIFIED';
@@ -31,6 +34,7 @@ export function ProposalCreate() {
     ...FIELDS.filter((f) => form[f.key].trim().length < f.min).map((f) => `${f.label} (at least ${f.min} characters)`),
     !(Number(form.cost) >= 1) && 'Pilot cost (₹)',
     !(Number(form.scaleupCost) >= 1) && 'Scale-up cost (₹)',
+    badLink && 'Each link needs a label and a full https:// address',
   ].filter(Boolean);
   const advisories = [
     challenge && Number(form.cost) > challenge.totalBudget && challenge.totalBudget > 0 && `Pilot cost exceeds the challenge budget of ${inr(challenge.totalBudget)}.`,
@@ -44,6 +48,7 @@ export function ProposalCreate() {
       challengeId, solutionTitle: form.solutionTitle.trim(), summary: form.summary.trim(), technicalApproach: form.technicalApproach.trim(),
       deploymentPlan: form.deploymentPlan.trim(), timeline: form.timeline.trim(), cost: form.cost, scaleupCost: form.scaleupCost,
       evidenceDeployments: lines(form.deployments), certifications: lines(form.certifications),
+      documents: filledLinks.map((l) => ({ label: l.label.trim(), url: l.url.trim() })),
     });
     navigate('/startup/proposals');
   });
@@ -103,6 +108,16 @@ export function ProposalCreate() {
           <label className="form-label" htmlFor="dep">Prior deployments (one per line)</label>
           <textarea id="dep" className="form-control" rows={3} value={form.deployments} onChange={set('deployments')} placeholder="Organisation, place, scale, year" />
         </div>
+        <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: '0.6rem' }}>
+          <legend className="form-label">Supporting links (up to 3)</legend>
+          <small style={{ color: 'var(--slate-500)' }}>Share view-only links (Google Drive, YouTube, GitHub and similar) to your deck, demo or technical note. Only https links. Make sure reviewers can open them.</small>
+          {form.links.map((l, i) => (
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.5rem' }}>
+              <input className="form-control" aria-label={`Link ${i + 1} label`} placeholder="Label, e.g. Pitch deck" value={l.label} onChange={setLink(i, 'label')} maxLength={80} />
+              <input className="form-control" aria-label={`Link ${i + 1} address`} type="url" placeholder="https://" value={l.url} onChange={setLink(i, 'url')} />
+            </div>
+          ))}
+        </fieldset>
         <div className="form-group" style={{ margin: 0 }}>
           <label className="form-label" htmlFor="cert">Certifications (one per line)</label>
           <textarea id="cert" className="form-control" rows={2} value={form.certifications} onChange={set('certifications')} />

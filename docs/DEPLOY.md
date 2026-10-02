@@ -16,6 +16,11 @@ The app creates all tables itself on first start (idempotent migrations). Never 
 Google Cloud Console → APIs & Services → Credentials → OAuth client ID (Web application).
 **Authorized JavaScript origins**: your exact site URL, `https://…`, no trailing slash (add `http://localhost:3001` for local tests). No redirect URIs are needed. Publish the consent screen so users beyond test users can sign in. Set the Client ID as `GOOGLE_CLIENT_ID`.
 
+## 2b. GitHub sign-in (optional)
+
+GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.
+**Homepage URL**: your site. **Authorization callback URL**: `https://<your-site>/api/v1/auth/github/callback` (exact; no trailing slash). Create the app, copy the **Client ID**, generate a **Client secret**, and set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and `PUBLIC_URL` (your site's address) on the host. The secret must never go in the repository. If a person's GitHub account has no *verified* email, they are asked to verify one on GitHub first.
+
 ## 3. Run it (Render)
 
 New → Blueprint → select the repo (reads `render.yaml`). Enter when prompted:
@@ -25,6 +30,7 @@ New → Blueprint → select the repo (reads `render.yaml`). Enter when prompted
 | `DATABASE_URL` | the Session pooler string from step 1 |
 | `ADMIN_EMAIL` | your email (first Super Admin) |
 | `GOOGLE_CLIENT_ID` | optional |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `PUBLIC_URL` | optional, for GitHub sign-in |
 | `GEMINI_API_KEY` | optional; see privacy note in README |
 
 `JWT_SECRET`, `COOKIE_SECRET`, `FIELD_ENCRYPTION_KEY` are generated for you. **Back up `FIELD_ENCRYPTION_KEY`**: if it is lost, stored PAN and bank numbers cannot be decrypted.

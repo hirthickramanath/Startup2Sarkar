@@ -203,7 +203,7 @@ describe('Sovereign API Integration Test — Full Procurement Lifecycle & Audit 
           { client: 'Government General Hospital', scope: 'Radiology Triage', status: 'Completed' }
         ],
         certifications: ['ISO 13485', 'CDSCO Registered Class B'],
-        documents: ['technical-architecture.pdf', 'clinical-trial-protocol.pdf']
+        documents: [{ label: 'Architecture note', url: 'https://drive.example.com/architecture' }, { label: 'Trial protocol', url: 'https://drive.example.com/protocol' }]
       }
     });
 

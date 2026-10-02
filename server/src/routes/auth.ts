@@ -3,12 +3,12 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import { DatabaseAdapter } from '../db';
 import { AuditService } from '../audit';
-import { verifyGoogleIdToken, JwksFetcher, hashPassword, verifyPassword, validatePasswordStrength, generateMfaSecret, verifyTotpToken, generateRecoveryCodes, verifyRecoveryCode, signToken, verifyToken, isValidPan, isValidGstin, isValidCinOrLlpin, isValidDpiitNumber, isValidIfsc, encryptField, maskBankAccount, maskPan, sha256, AuthenticatedRequest, createAuthMiddleware, requireRole } from '../security';
+import { hashPassword, verifyPassword, validatePasswordStrength, generateMfaSecret, verifyTotpToken, generateRecoveryCodes, verifyRecoveryCode, signToken, verifyToken, isValidPan, isValidGstin, isValidCinOrLlpin, isValidDpiitNumber, isValidIfsc, encryptField, maskBankAccount, maskPan, sha256, AuthenticatedRequest, createAuthMiddleware, requireRole } from '../security';
 
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
-  role: z.enum(['government', 'startup', 'inspector', 'finance', 'admin']),
+  role: z.enum(['government', 'startup', 'inspector', 'finance', 'admin', 'investor']),
   captchaToken: z.string().optional()
 });
 
@@ -28,28 +28,12 @@ const registerStartupSchema = z.object({
   ifscCode: z.string().length(11)
 });
 
-export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapter; auditService: AuditService; jwksFetcher?: JwksFetcher }) {
+export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapter; auditService: AuditService }) {
   const { db, auditService } = opts;
   const AUTH_RATE = { config: { rateLimit: { max: parseInt(process.env.AUTH_RATE_MAX || '10', 10), timeWindow: '1 minute' } } };
 
   const PRIVILEGED = ['government', 'inspector', 'finance', 'admin'];
 
-  /** Creates a DB session + signed cookie and returns the API payload (used by Google sign-in). */
-  async function startSession(user: any, request: FastifyRequest, reply: FastifyReply, auditAction: string) {
-    const sessionId = `SESS-${Date.now()}-${sha256(crypto.randomBytes(16).toString('hex')).slice(0, 8)}`;
-    const expiresAt = new Date(Date.now() + 8 * 3600 * 1000);
-    const ip = request.ip || '127.0.0.1';
-    const ua = (request.headers['user-agent'] as string) || 'Unknown';
-    await db.query('INSERT INTO sessions (id, user_id, ip_address, user_agent, expires_at) VALUES ($1, $2, $3, $4, $5)', [sessionId, user.id, ip, ua, expiresAt]);
-    const token = signToken({ userId: user.id, email: user.email, role: user.role, name: user.name, departmentId: user.department_id, organizationId: user.organization_id, sessionId });
-    reply.setCookie('s2s_session', token, { path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', maxAge: 8 * 3600 });
-    await auditService.logEvent({ actorId: user.id, actorName: user.name, actorRole: user.role, action: auditAction, entityType: 'AUTH', entityId: sessionId, details: { role: user.role, provider: 'google' }, ipAddress: ip, userAgent: ua });
-    return {
-      success: true,
-      user: { id: user.id, name: user.name, email: user.email, role: user.role, designation: user.designation, departmentId: user.department_id, organizationId: user.organization_id, mfaEnabled: user.mfa_enabled, mustChangePassword: false, mfaEnrollmentRequired: PRIVILEGED.includes(user.role) && !user.mfa_enabled },
-      token
-    };
-  }
   const authenticate = createAuthMiddleware(db);
 
   // 1. Multi-Role Login Gateway (Spec Section 6, 20, 35, 46, 69)
@@ -491,7 +475,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
     const authReq = request as AuthenticatedRequest;
     const res = await db.query(
       `SELECT u.id, u.email, u.role, u.name, u.designation, u.department_id, u.organization_id,
-              u.mfa_enabled, u.must_change_password, u.auth_provider, u.avatar_url,
+              u.mfa_enabled, u.must_change_password, u.auth_provider, u.avatar_url, u.status, u.has_password, u.phone,
               d.name as department_name, d.code as department_code,
               o.name as organization_name, o.verification_status, o.dpiit_number
        FROM users u
@@ -568,72 +552,6 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
     return reply.send({ sessions: res.rows });
   });
 
-  // 10. Sign in / sign up with Google (ID-token flow). Verified locally — no client secret required.
-  app.post('/google', AUTH_RATE, async (request: FastifyRequest, reply: FastifyReply) => {
-    const parsed = z.object({
-      credential: z.string().min(20).max(4096),
-      role: z.enum(['government', 'startup', 'inspector', 'finance', 'admin'])
-    }).safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'Invalid sign-in payload' });
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    if (!clientId) return reply.status(503).send({ error: 'Google sign-in is not configured on this server', code: 'GOOGLE_NOT_CONFIGURED' });
-
-    let ident;
-    try {
-      ident = await verifyGoogleIdToken(parsed.data.credential, clientId, opts.jwksFetcher);
-    } catch {
-      return reply.status(503).send({ error: 'Could not reach Google to verify the sign-in. Try again shortly.', code: 'GOOGLE_UNAVAILABLE' });
-    }
-    const generic = { error: 'Invalid credentials or unauthorized login gateway for this operational identity', code: 'AUTH_FAILED' };
-    if (!ident) return reply.status(401).send(generic);
-
-    const found = await db.query('SELECT * FROM users WHERE google_sub = $1 OR LOWER(email) = LOWER($2) ORDER BY (google_sub = $1) DESC NULLS LAST LIMIT 1', [ident.sub, ident.email]);
-    let user = found.rows[0];
-    let isNew = false;
-
-    if (user) {
-      if (!user.is_active || user.role !== parsed.data.role) {
-        await auditService.logEvent({ actorId: user.id, actorName: user.name, actorRole: user.role, action: 'AUTH_GOOGLE_REJECTED', entityType: 'AUTH', entityId: user.id, details: { gateway: parsed.data.role, active: user.is_active }, ipAddress: request.ip || '127.0.0.1', userAgent: (request.headers['user-agent'] as string) || 'Unknown' });
-        return reply.status(401).send(generic);
-      }
-      if (user.google_sub && user.google_sub !== ident.sub) return reply.status(401).send(generic); // email now belongs to a different Google account
-      if (!user.google_sub) {
-        await db.query(`UPDATE users SET google_sub = $1, avatar_url = COALESCE($2, avatar_url), updated_at = CURRENT_TIMESTAMP WHERE id = $3`, [ident.sub, ident.picture || null, user.id]);
-      }
-    } else {
-      // Only startups may self-provision; officials, inspectors, finance & admins are invited by an administrator.
-      if (parsed.data.role !== 'startup') {
-        return reply.status(401).send({ error: 'No account has been provisioned for this Google email. Ask your Super Administrator to invite you.', code: 'NOT_PROVISIONED' });
-      }
-      const orgId = `ORG-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-      const userId = `USR-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-      const unusable = await hashPassword(crypto.randomBytes(32).toString('base64') + 'aA1!');
-      await db.transaction(async (tx) => {
-        await tx.query(
-          `INSERT INTO organizations (id, name, founder_name, founder_email, sector, verification_status)
-           VALUES ($1, $2, $3, $4, 'Unspecified', 'PENDING')`,
-          [orgId, `${ident.name}'s Startup`, ident.name, ident.email]
-        );
-        await tx.query(
-          `INSERT INTO users (id, email, password_hash, role, name, designation, organization_id, google_sub, auth_provider, avatar_url)
-           VALUES ($1, $2, $3, 'startup', $4, 'Founder', $5, $6, 'google', $7)`,
-          [userId, ident.email, unusable, ident.name, orgId, ident.sub, ident.picture || null]
-        );
-      });
-      user = (await db.query('SELECT * FROM users WHERE id = $1', [userId])).rows[0];
-      isNew = true;
-      await auditService.logEvent({ actorId: userId, actorName: ident.name, actorRole: 'startup', action: 'ORGANIZATION_SELF_REGISTERED_GOOGLE', entityType: 'ORGANIZATION', entityId: orgId, details: { verificationStatus: 'PENDING' }, ipAddress: request.ip || '127.0.0.1', userAgent: (request.headers['user-agent'] as string) || 'Unknown' });
-    }
-
-    // Respect TOTP if the user enrolled it
-    if (user.mfa_enabled && user.mfa_secret) {
-      const tempToken = signToken({ userId: user.id, email: user.email, role: user.role, name: user.name, departmentId: user.department_id, organizationId: user.organization_id, sessionId: `TEMP-MFA-${Date.now()}` }, 300);
-      return reply.send({ requireMfa: true, tempToken, message: 'Enter your 6-digit authenticator code' });
-    }
-    const payload = await startSession(user, request, reply, isNew ? 'AUTH_GOOGLE_SIGNUP' : 'AUTH_GOOGLE_LOGIN');
-    return reply.send({ ...payload, isNewAccount: isNew });
-  });
-
   // 11. Change password (also clears the forced-change flag set on admin-provisioned accounts)
   app.post('/change-password', { preHandler: [authenticate], ...AUTH_RATE }, async (request: FastifyRequest, reply: FastifyReply) => {
     const authReq = request as AuthenticatedRequest;
@@ -659,7 +577,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
     if (!authReq.user.organizationId) return reply.send({ organization: null });
     const res = await db.query(
       `SELECT id, name, dpiit_number, cin_llpin, pan, gstin, bank_account_masked, ifsc_code, founder_name, founder_email, founder_phone,
-              website, sector, stage, verification_status, verification_notes, verified_at, created_at
+              website, sector, stage, verification_status, verification_notes, verified_at, created_at, showcase_opt_in, showcase_summary
        FROM organizations WHERE id = $1`,
       [authReq.user.organizationId]
     );

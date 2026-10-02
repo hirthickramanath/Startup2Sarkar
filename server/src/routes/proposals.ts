@@ -16,7 +16,11 @@ const submitProposalSchema = z.object({
   scaleupCostPaise: z.number().int().min(100),
   evidenceDeployments: z.array(z.any()).default([]),
   certifications: z.array(z.any()).default([]),
-  documents: z.array(z.any()).default([])
+  // Supporting material is shared as links (Drive, YouTube, GitHub ...): at most 3, https only, each with a short label.
+  documents: z.array(z.object({
+    label: z.string().trim().min(2).max(80),
+    url: z.string().trim().url().max(300).refine((u) => /^https:\/\//i.test(u), 'Links must start with https://')
+  })).max(3, 'You can add at most 3 links').default([])
 });
 
 export async function proposalRoutes(

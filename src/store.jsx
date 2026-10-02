@@ -186,6 +186,7 @@ function normalizeStartup(s) {
     pan: s.pan || '', gstin: s.gstin || '', stage: s.stage || '',
     bankDetails: { accountName: s.name, accountMasked: s.bank_account_masked || '', ifsc: s.ifsc_code || '', verified: s.verification_status === 'VERIFIED' },
     verificationStatus: s.verification_status, verificationNotes: s.verification_notes || '', verifiedAt: day(s.verified_at),
+    showcaseOptIn: !!s.showcase_opt_in, showcaseSummary: s.showcase_summary || '',
     createdAt: day(s.created_at),
   };
 }
@@ -221,6 +222,33 @@ function normalizeNotification(n) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
+   Theme: three named themes x light/dark, remembered per browser
+   ════════════════════════════════════════════════════════════════════════════ */
+
+const ThemeContext = createContext(null);
+export const THEMES = [['graphite', 'Graphite'], ['burst', 'Burst'], ['meadow', 'Meadow']];
+
+export function ThemeProvider({ children }) {
+  const read = (k, ok, fallback) => { try { const v = localStorage.getItem(k); return ok.includes(v) ? v : fallback; } catch { return fallback; } };
+  const systemMode = () => (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const [theme, setThemeState] = useState(() => read('s2s_theme', ['graphite', 'burst', 'meadow'], 'graphite'));
+  const [mode, setModeState] = useState(() => read('s2s_mode', ['light', 'dark'], systemMode()));
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.setAttribute('data-mode', mode);
+    try { localStorage.setItem('s2s_theme', theme); localStorage.setItem('s2s_mode', mode); } catch { /* private mode */ }
+  }, [theme, mode]);
+  const value = useMemo(() => ({ theme, mode, setTheme: setThemeState, setMode: setModeState, toggleMode: () => setModeState((m) => (m === 'dark' ? 'light' : 'dark')) }), [theme, mode]);
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+}
+
+export function useTheme() {
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error('useTheme must be used within a ThemeProvider');
+  return ctx;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
    Auth
    ════════════════════════════════════════════════════════════════════════════ */
 
@@ -235,6 +263,7 @@ function shapeUser(u) {
     organization_id: u.organization_id ?? u.organizationId ?? null, organizationId: u.organizationId ?? u.organization_id ?? null,
     mustChangePassword: !!(u.mustChangePassword ?? u.must_change_password),
     mfaEnabled: !!(u.mfaEnabled ?? u.mfa_enabled),
+    status: u.status || 'ACTIVE',
   };
 }
 
@@ -243,7 +272,7 @@ export function AuthProvider({ children }) {
   const [isLoading, setIsLoading] = useState(true);
   const [loginError, setLoginError] = useState(null);
   const [mfaChallenge, setMfaChallenge] = useState(null);
-  const [config, setConfig] = useState({ googleClientId: null, aiMode: 'local' });
+  const [config, setConfig] = useState({ googleClientId: null, githubEnabled: false, aiMode: 'local' });
 
   const clearSession = useCallback(() => {
     setUser(null); clearAuthToken(); sessionStorage.removeItem(TOKEN_KEY); setMfaChallenge(null);
@@ -254,6 +283,21 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let alive = true;
     authApi.config().then((c) => alive && setConfig(c)).catch(() => {});
+    // The GitHub redirect hands back either an MFA challenge (#mfa=…) or a reason it failed (?error=…)
+    try {
+      const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const params = new URLSearchParams(window.location.search);
+      const messages = {
+        github_state: 'The GitHub sign-in expired or was interrupted. Please try again.',
+        github_denied: 'GitHub sign-in was cancelled.',
+        github_failed: 'GitHub did not complete the sign-in. Please try again.',
+        github_not_configured: 'GitHub sign-in is not set up on this server yet.',
+        no_verified_email: 'That account has no verified email address. Verify one with the provider, or sign in another way.',
+        auth_failed: 'We could not sign you in with that account.',
+      };
+      if (hash.get('mfa')) { setMfaChallenge({ tempToken: hash.get('mfa'), message: 'Enter your 6-digit authenticator code' }); window.history.replaceState({}, '', '/login'); }
+      else if (params.get('error')) { setLoginError(messages[params.get('error')] || 'Sign-in failed. Please try again.'); window.history.replaceState({}, '', '/login'); }
+    } catch { /* ignore malformed URLs */ }
     const saved = sessionStorage.getItem(TOKEN_KEY);
     if (saved) setAuthToken(saved);
     authApi.me()
@@ -282,8 +326,18 @@ export function AuthProvider({ children }) {
 
   const loginWithGoogle = useCallback(async (credential, role) => {
     setLoginError(null); setMfaChallenge(null);
-    try { return finishLogin(await authApi.google(credential, role)); }
+    try {
+      const r = await authApi.google(credential, role);
+      if (r.needsOnboarding) return { needsOnboarding: true };
+      return finishLogin(r);
+    }
     catch (e) { setLoginError(e.message); return { error: e.message, code: e.code }; }
+  }, [finishLogin]);
+
+  const completeOnboarding = useCallback(async (payload) => {
+    setLoginError(null);
+    const r = await authApi.onboarding(payload); // throws ApiError with the server's message
+    return finishLogin(r);
   }, [finishLogin]);
 
   const verifyMfa = useCallback(async (code) => {
@@ -308,9 +362,9 @@ export function AuthProvider({ children }) {
 
   const value = useMemo(() => ({
     user, isAuthenticated: !!user, isLoading, loginError, mfaChallenge, config,
-    login, loginWithGoogle, verifyMfa, logout, refreshUser, setLoginError,
+    login, loginWithGoogle, completeOnboarding, verifyMfa, logout, refreshUser, setLoginError,
     cancelMfa: () => setMfaChallenge(null),
-  }), [user, isLoading, loginError, mfaChallenge, config, login, loginWithGoogle, verifyMfa, logout, refreshUser]);
+  }), [user, isLoading, loginError, mfaChallenge, config, login, loginWithGoogle, completeOnboarding, verifyMfa, logout, refreshUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
@@ -329,7 +383,7 @@ const AppContext = createContext(null);
 
 const EMPTY = {
   challenges: [], proposals: [], pilots: [], payments: [], anomalies: [], stalledPilots: [], departments: [],
-  users: [], startups: [], auditLogs: [], notifications: [], myOrganization: null, settings: null, loaded: false,
+  users: [], startups: [], auditLogs: [], notifications: [], accessRequests: [], myOrganization: null, settings: null, loaded: false,
 };
 
 export function AppProvider({ children }) {
@@ -378,6 +432,12 @@ export function AppProvider({ children }) {
     if (!isAuthenticated || !user) return;
     const role = user.role;
     const safe = (p) => p.catch(() => null);
+    if (user.status && user.status !== 'ACTIVE') { setState({ ...EMPTY, loaded: true }); return; }
+    if (role === 'investor') {
+      const n = await safe(notificationsApi.list());
+      setState((prev) => ({ ...prev, notifications: (n?.notifications || []).map(normalizeNotification), loaded: true }));
+      return;
+    }
     const [chRes, notifRes, deptPublic] = await Promise.all([
       safe(challengesApi.list({ limit: '100' })), safe(notificationsApi.list()), safe(publicApi.departments()),
     ]);
@@ -392,6 +452,8 @@ export function AppProvider({ children }) {
     let anomRes = null, stalledRes = null, budgetRes = null, usersRes = null, startupsRes = null, auditRes = null, deptAdmin = null, settingsRes = null, orgRes = null;
     if (role === 'finance' || role === 'admin') [anomRes, stalledRes, budgetRes] = await Promise.all([safe(financeApi.anomalies()), safe(financeApi.stalled()), safe(financeApi.budget())]);
     if (role === 'admin') [usersRes, startupsRes, auditRes, deptAdmin, settingsRes] = await Promise.all([safe(adminApi.users()), safe(adminApi.startups()), safe(adminApi.auditLogs({ limit: '50' })), safe(adminApi.departments()), safe(adminApi.settings())]);
+    let accessRes = null;
+    if (role === 'admin') accessRes = await safe(adminApi.accessRequests('PENDING'));
     if (role === 'startup') orgRes = await safe(authApi.organization());
     if (role === 'government') auditRes = await safe(auditApi.mine());
 
@@ -423,6 +485,7 @@ export function AppProvider({ children }) {
         : (startupsRes?.startups || []).map(normalizeStartup),
       auditLogs: (auditRes?.logs || []).map(normalizeAuditLog),
       notifications: (notifRes?.notifications || []).map(normalizeNotification),
+      accessRequests: accessRes?.requests || [],
       myOrganization: orgRes?.organization ? normalizeStartup(orgRes.organization) : null,
       settings: settingsRes?.settings || null,
       auditIntegrity: auditRes?.integrity || null,

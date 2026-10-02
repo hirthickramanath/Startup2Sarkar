@@ -55,12 +55,13 @@ export const api = {
   get: (p, o) => request('GET', p, null, o),
   post: (p, b, o) => request('POST', p, b, o),
   put: (p, b, o) => request('PUT', p, b, o),
+  del: (p, o) => request('DELETE', p, null, o),
 };
 
 export const authApi = {
   config: () => api.get('/public/config'),
   login: (email, password, role) => api.post('/auth/login', { email, password, role }),
-  google: (credential, role) => api.post('/auth/google', { credential, role }),
+  google: (credential, role) => api.post('/auth/google', role ? { credential, role } : { credential }),
   verifyMfa: (tempToken, code) => api.post('/auth/mfa/verify', { tempToken, code }),
   setupMfa: () => api.post('/auth/mfa/setup'),
   enableMfa: (code) => api.post('/auth/mfa/enable', { code }),
@@ -70,6 +71,17 @@ export const authApi = {
   sessions: () => api.get('/auth/sessions'),
   registerStartup: (d) => api.post('/auth/register-startup', d),
   organization: () => api.get('/auth/organization'),
+  updateOrganization: (d) => api.put('/auth/organization', d),
+  githubLoginUrl: '/api/v1/auth/github/login',
+  linkGithub: () => api.post('/auth/github/link-url'),
+  linkGoogle: (credential) => api.post('/auth/google/link', { credential }),
+  identities: () => api.get('/auth/identities'),
+  unlink: (provider) => api.del(`/auth/identities/${provider}`),
+  onboardingPrefill: () => api.get('/auth/onboarding'),
+  onboarding: (d) => api.post('/auth/onboarding', d),
+  accessRequest: () => api.get('/auth/access-request'),
+  profileLinks: () => api.get('/auth/profile-links'),
+  saveProfileLinks: (links) => api.put('/auth/profile-links', { links }),
   changePassword: (currentPassword, newPassword) => api.post('/auth/change-password', { currentPassword, newPassword }),
 };
 
@@ -138,8 +150,24 @@ export const adminApi = {
   auditLogs: (p) => api.get(`/admin/audit-logs${qs(p)}`),
   settings: () => api.get('/admin/settings'),
   saveSettings: (d) => api.put('/admin/settings', d),
+  accessRequests: (status = 'PENDING') => api.get(`/admin/access-requests${qs({ status })}`),
+  approveRequest: (id, body) => api.post(`/admin/access-requests/${id}/approve`, body || {}),
+  rejectRequest: (id, note) => api.post(`/admin/access-requests/${id}/reject`, { note }),
+  investors: () => api.get('/admin/investors'),
+  verifyInvestor: (userId, status, notes) => api.put(`/admin/investors/${userId}/verify`, { status, notes }),
   ai: () => api.get('/admin/ai'),
   aiLogs: () => api.get('/admin/ai/logs'),
+};
+
+export const networkApi = {
+  me: () => api.get('/network/me'),
+  updateMe: (d) => api.put('/network/me', d),
+  startups: (p) => api.get(`/network/startups${qs(p)}`),
+  requestIntro: (organizationId, message) => api.post('/network/intros', { organizationId, message }),
+  intros: () => api.get('/network/intros'),
+  incoming: () => api.get('/network/incoming'),
+  respond: (id, accept) => api.post(`/network/incoming/${id}/respond`, { accept }),
+  showcase: (optIn, summary) => api.put('/network/showcase', { optIn, summary }),
 };
 
 export const assistantApi = {

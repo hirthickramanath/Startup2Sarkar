@@ -445,4 +445,90 @@ export async function adminRoutes(
     );
     return reply.send({ logs: res.rows });
   });
+
+  // ───────────── Access requests (government / finance / inspector) ─────────────
+  app.get('/access-requests', async (request: FastifyRequest, reply: FastifyReply) => {
+    const status = String((request.query as any).status || 'PENDING').toUpperCase();
+    const where = ['PENDING', 'APPROVED', 'REJECTED'].includes(status) ? 'WHERE r.status = $1' : '';
+    const res = await db.query(
+      `SELECT r.id, r.user_id, r.requested_role, r.designation, r.official_email, r.phone, r.employee_id, r.reason, r.status, r.review_note, r.created_at, r.reviewed_at,
+              r.department_id, d.name AS department_name, u.name AS applicant_name, u.email AS login_email, i.provider AS login_provider
+       FROM access_requests r
+       JOIN users u ON u.id = r.user_id
+       LEFT JOIN departments d ON d.id = r.department_id
+       LEFT JOIN auth_identities i ON i.user_id = r.user_id
+       ${where} ORDER BY r.created_at DESC LIMIT 200`,
+      where ? [status] : []
+    );
+    return reply.send({ requests: res.rows });
+  });
+
+  app.post('/access-requests/:id/approve', async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({
+      role: z.enum(['government', 'finance', 'inspector']).optional(),
+      departmentId: z.string().min(3).max(60).optional(),
+      note: z.string().trim().max(500).optional()
+    }).safeParse(request.body || {});
+    if (!parsed.success) return reply.status(400).send({ error: 'Invalid approval' });
+    const req = (await db.query('SELECT * FROM access_requests WHERE id = $1', [(request.params as any).id])).rows[0];
+    if (!req) return reply.status(404).send({ error: 'Request not found' });
+    if (req.status !== 'PENDING') return reply.status(409).send({ error: `This request is already ${req.status.toLowerCase()}` });
+
+    const role = parsed.data.role ?? req.requested_role;
+    const departmentId = parsed.data.departmentId ?? req.department_id;
+    if ((role === 'government' || role === 'finance') && !departmentId) return reply.status(400).send({ error: 'Choose a department for this role' });
+    if (departmentId) {
+      const d = await db.query('SELECT 1 FROM departments WHERE id = $1 AND is_active = TRUE', [departmentId]);
+      if (d.rows.length === 0) return reply.status(400).send({ error: 'Unknown or inactive department' });
+    }
+    await db.transaction(async (tx) => {
+      await tx.query(`UPDATE users SET role = $1, department_id = $2, designation = $3, status = 'ACTIVE', is_active = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = $4`, [role, departmentId ?? null, req.designation, req.user_id]);
+      await tx.query(`UPDATE access_requests SET status = 'APPROVED', reviewed_by_user_id = $1, reviewed_at = CURRENT_TIMESTAMP, review_note = $2, requested_role = $3, department_id = $4 WHERE id = $5`, [authReq.user.userId, parsed.data.note ?? null, role, departmentId ?? null, req.id]);
+      await tx.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) VALUES ($1,$2,'Access approved',$3,'INFO',$4)`, [`NTF-${Date.now()}-${Math.floor(Math.random() * 1000)}`, req.user_id, `Your ${role} access was approved. You can now use your workspace.`, `/${role}/dashboard`]);
+    });
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: 'ACCESS_REQUEST_APPROVED', entityType: 'USER', entityId: req.user_id, details: { requestId: req.id, role, departmentId }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true });
+  });
+
+  app.post('/access-requests/:id/reject', async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ note: z.string().trim().min(5).max(500) }).safeParse(request.body || {});
+    if (!parsed.success) return reply.status(400).send({ error: 'Give a reason (at least 5 characters)' });
+    const req = (await db.query('SELECT * FROM access_requests WHERE id = $1', [(request.params as any).id])).rows[0];
+    if (!req) return reply.status(404).send({ error: 'Request not found' });
+    if (req.status !== 'PENDING') return reply.status(409).send({ error: `This request is already ${req.status.toLowerCase()}` });
+    await db.transaction(async (tx) => {
+      await tx.query(`UPDATE users SET status = 'REJECTED', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [req.user_id]);
+      await tx.query(`UPDATE access_requests SET status = 'REJECTED', reviewed_by_user_id = $1, reviewed_at = CURRENT_TIMESTAMP, review_note = $2 WHERE id = $3`, [authReq.user.userId, parsed.data.note, req.id]);
+      await tx.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) VALUES ($1,$2,'Access request not approved',$3,'WARNING','/')`, [`NTF-${Date.now()}-${Math.floor(Math.random() * 1000)}`, req.user_id, parsed.data.note]);
+    });
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: 'ACCESS_REQUEST_REJECTED', entityType: 'USER', entityId: req.user_id, details: { requestId: req.id }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true });
+  });
+
+  // ───────────── Investors: the administrator can verify and suspend, nothing more ─────────────
+  // (No endpoint here reads introductions, messages or what an investor looked at.)
+  app.get('/investors', async (_request: FastifyRequest, reply: FastifyReply) => {
+    const res = await db.query(
+      `SELECT p.user_id, u.name, u.email, u.is_active, p.investor_type, p.organisation, p.website, p.linkedin_url,
+              p.verification_status, p.verification_notes, p.verified_at, u.created_at
+       FROM investor_profiles p JOIN users u ON u.id = p.user_id ORDER BY u.created_at DESC LIMIT 300`
+    );
+    return reply.send({ investors: res.rows });
+  });
+
+  app.put('/investors/:userId/verify', async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ status: z.enum(['VERIFIED', 'REJECTED']), notes: z.string().trim().min(5).max(500) }).safeParse(request.body || {});
+    if (!parsed.success) return reply.status(400).send({ error: 'Choose a decision and add notes (at least 5 characters)' });
+    const userId = (request.params as any).userId;
+    const exists = await db.query('SELECT 1 FROM investor_profiles WHERE user_id = $1', [userId]);
+    if (exists.rows.length === 0) return reply.status(404).send({ error: 'Investor not found' });
+    await db.query(`UPDATE investor_profiles SET verification_status = $1, verification_notes = $2, verified_by_user_id = $3, verified_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $4`, [parsed.data.status, parsed.data.notes, authReq.user.userId, userId]);
+    await db.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) VALUES ($1,$2,$3,$4,'INFO','/investor/profile')`,
+      [`NTF-${Date.now()}-${Math.floor(Math.random() * 1000)}`, userId, parsed.data.status === 'VERIFIED' ? 'Investor profile verified' : 'Investor profile not verified', parsed.data.status === 'VERIFIED' ? 'You can now browse startups and request introductions.' : parsed.data.notes]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: `INVESTOR_${parsed.data.status}`, entityType: 'USER', entityId: userId, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true });
+  });
 }

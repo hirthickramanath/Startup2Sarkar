@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { CheckCircle2, Clock, AlertTriangle, XCircle, ShieldCheck, FileText, Send, PauseCircle, Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Inbox, User, HardDrive, CheckCircle, ShieldAlert, X, AlertCircle, Info } from 'lucide-react';
-import { useApp } from '../../store';
+import { useApp, useTheme, THEMES } from '../../store';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Tooltip from '@radix-ui/react-tooltip';
 
@@ -611,4 +611,52 @@ export function useBusy() {
     try { return await fn(); } catch { return undefined; } finally { setBusy(false); }
   };
   return [busy, run];
+}
+
+
+/* ── Brand mark (quarter-grid: an arch over a startup circle and an institution square) ── */
+export function Logo({ size = 32, withName = true, nameSize = 18, tone = 'default' }) {
+  const ink = tone === 'onDark' ? '#FFFFFF' : 'var(--ink)';
+  const accent = tone === 'onDark' ? '#FFB000' : 'var(--accent)';
+  const accentText = tone === 'onDark' ? '#FFB000' : 'var(--accent-text)';
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: Math.round(size / 3.2) }}>
+      <svg width={size} height={size} viewBox="0 0 64 64" fill="none" aria-hidden="true">
+        <path d="M6 30 A24 24 0 0 1 30 6 V30 Z" style={{ fill: ink }} />
+        <path d="M58 30 A24 24 0 0 0 34 6 V30 Z" style={{ fill: ink }} />
+        <circle cx="18" cy="46" r="12" style={{ fill: accent }} />
+        <rect x="34" y="34" width="24" height="24" style={{ fill: ink }} />
+      </svg>
+      {withName && (
+        <span style={{ fontFamily: "'Sora','Figtree',sans-serif", fontWeight: 800, fontSize: nameSize, letterSpacing: '-0.02em', color: ink }}>
+          Startup<span style={{ color: accentText }}>2</span>Sarkar
+        </span>
+      )}
+    </span>
+  );
+}
+
+/* ── Theme picker + light/dark switch (remembered per browser) ── */
+export function ThemeControls({ compact = false }) {
+  const { theme, setTheme, mode, toggleMode } = useTheme();
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {!compact && (
+        <div role="group" aria-label="Theme" style={{ display: 'flex', gap: 4, padding: 3, borderRadius: 'var(--radius-md)', background: 'var(--slate-100)' }}>
+          {THEMES.map(([id, label]) => (
+            <button key={id} type="button" onClick={() => setTheme(id)} aria-pressed={theme === id}
+              style={{ height: 30, padding: '0 12px', border: 0, borderRadius: 6, cursor: 'pointer', font: '600 12px Figtree, sans-serif', background: theme === id ? 'var(--brand)' : 'transparent', color: theme === id ? 'var(--on-brand)' : 'var(--slate-800)' }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      <button type="button" onClick={toggleMode} aria-label={`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`}
+        style={{ display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 'var(--radius-md)', border: '1px solid var(--slate-300)', background: 'var(--white)', color: 'var(--slate-800)', cursor: 'pointer' }}>
+        {mode === 'dark'
+          ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+          : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z" /></svg>}
+      </button>
+    </div>
+  );
 }

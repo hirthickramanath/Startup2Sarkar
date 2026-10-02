@@ -2,6 +2,9 @@ import React, { useEffect, useState, lazy, Suspense } from 'react';
 import { useApp, useAuth, shouldShowIntro } from './store';
 import { authApi } from './api';
 import { LoginPage } from './components/auth/LoginPage';
+import { Onboarding, AccessPending } from './components/auth/Onboarding';
+import { InvestorDashboard, InvestorStartups, InvestorIntros, InvestorProfile } from './components/roles/investor/Investor';
+import { AdminAccessRequests } from './components/roles/admin/AdminAccess';
 import { AppShell } from './components/common/AppShell';
 import { ToastHost, useBusy } from './components/common/ui';
 import { ShieldAlert, LogOut, Loader2, KeyRound } from 'lucide-react';
@@ -78,7 +81,13 @@ const ROUTES = [
   ['/finance/stalled', 'Stalled pilots', () => <FinanceStalledPilots />],
   ['/finance/reports', 'Case files', () => <FinanceReports />],
 
+  ['/investor/dashboard', 'Investor workspace', () => <InvestorDashboard />],
+  ['/investor/startups', 'Startup directory', () => <InvestorStartups />],
+  ['/investor/intros', 'My introductions', () => <InvestorIntros />],
+  ['/investor/profile', 'Investor profile', () => <InvestorProfile />],
+
   ['/admin/dashboard', 'Platform operations', () => <AdminDashboard />],
+  ['/admin/access-requests', 'Access requests', () => <AdminAccessRequests />],
   ['/admin/users', 'User directory', () => <AdminUsers />],
   ['/admin/departments', 'Departments', () => <AdminDepartments />],
   ['/admin/ai', 'AI governance', () => <AdminAiConfig />],
@@ -137,7 +146,7 @@ function ForcePasswordChange() {
     });
   };
   return (
-    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#050b1a', padding: '1rem' }}>
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--slate-50)', padding: '1rem' }}>
       <form className="auth-card" onSubmit={submit} style={{ maxWidth: 420, width: '100%' }}>
         <KeyRound size={28} color="#60a5fa" />
         <h1 className="auth-h2">Set a new password</h1>
@@ -159,7 +168,7 @@ export default function App() {
 
   // After sign-in, or when opening "/" or a login URL while signed in, land on the role dashboard
   useEffect(() => {
-    if (isAuthenticated && user && (currentRoute === '/' || currentRoute.startsWith('/login'))) navigate(`/${user.role}/dashboard`);
+    if (isAuthenticated && user && (currentRoute === '/' || currentRoute.startsWith('/login') || currentRoute === '/signup')) navigate(`/${user.role}/dashboard`);
   }, [isAuthenticated, user, currentRoute, navigate]);
 
   if (isLoading) return <Splash />;
@@ -173,11 +182,13 @@ export default function App() {
   }
 
   if (!isAuthenticated) {
+    if (currentRoute === '/signup') return <><Onboarding /><ToastHost /></>;
     const m = currentRoute.match(/^\/login\/([a-z]+)/);
     return <><LoginPage initialRole={m ? m[1] : null} /><ToastHost /></>;
   }
+  if (user.status && user.status !== 'ACTIVE') return <><AccessPending /><ToastHost /></>;
   if (user.mustChangePassword) return <><ForcePasswordChange /><ToastHost /></>;
-  if (currentRoute === '/' || currentRoute.startsWith('/login')) return null;
+  if (currentRoute === '/' || currentRoute.startsWith('/login') || currentRoute === '/signup') return null;
 
   // Role gate (the server enforces this independently; this just gives a friendly screen)
   const allowed = user.role === 'admin' || currentRoute.startsWith(`/${user.role}/`) || currentRoute === `/${user.role}`;

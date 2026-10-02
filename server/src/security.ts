@@ -68,7 +68,7 @@ const JWT_SECRET = requireSecret('JWT_SECRET', 's2s_dev_only_jwt_secret_not_for_
 export interface TokenPayload {
   userId: string;
   email: string;
-  role: 'government' | 'startup' | 'inspector' | 'finance' | 'admin';
+  role: 'government' | 'startup' | 'inspector' | 'finance' | 'admin' | 'investor';
   name: string;
   departmentId?: string | null;
   organizationId?: string | null;
@@ -227,7 +227,7 @@ export function createAuthMiddleware(db: DatabaseAdapter) {
 
     // Verify session still exists in database and user is active
     const sessionRes = await db.query(
-      `SELECT s.id, u.is_active, u.role, u.department_id, u.organization_id
+      `SELECT s.id, u.is_active, u.status, u.role, u.department_id, u.organization_id
        FROM sessions s
        JOIN users u ON s.user_id = u.id
        WHERE s.id = $1 AND s.expires_at > CURRENT_TIMESTAMP`,
@@ -238,11 +238,42 @@ export function createAuthMiddleware(db: DatabaseAdapter) {
       return reply.status(401).send({ error: 'Unauthorized: Session terminated or user deactivated' });
     }
 
-    (request as AuthenticatedRequest).user = payload;
+    // People whose account is still awaiting approval (or was rejected) may only reach the sign-in/onboarding endpoints.
+    // Every data endpoint is closed to them, whatever role they asked for.
+    const status = sessionRes.rows[0].status;
+    if (status && status !== 'ACTIVE') {
+      const path = request.url.split('?')[0];
+      if (!path.startsWith('/api/v1/auth/')) {
+        return reply.status(403).send({
+          error: status === 'PENDING_APPROVAL' ? 'Your access request is awaiting administrator approval.' : 'Your access request was not approved.',
+          code: 'ACCOUNT_NOT_ACTIVE',
+          status
+        });
+      }
+    }
+
+    // Investors are walled off: the ONLY places an investor token works are listed here. Everything else (including any
+    // endpoint that has a "show everyone else all rows" branch) is closed to them by default.
+    if (sessionRes.rows[0].role === 'investor') {
+      const path = request.url.split('?')[0];
+      const allowed = ['/api/v1/network', '/api/v1/auth/', '/api/v1/notifications', '/api/v1/assistant', '/api/v1/public'];
+      if (!allowed.some((a) => path === a || path.startsWith(a.endsWith('/') ? a : a + '/'))) {
+        return reply.status(403).send({ error: 'Forbidden: investors can only use the investor workspace', code: 'INSUFFICIENT_ROLE_PERMISSIONS' });
+      }
+    }
+
+    // The role in the token can be stale if an administrator changed it: trust the database.
+    (request as AuthenticatedRequest).user = {
+      ...payload,
+      role: sessionRes.rows[0].role,
+      departmentId: sessionRes.rows[0].department_id,
+      organizationId: sessionRes.rows[0].organization_id
+    };
   };
 }
 
-export function requireRole(...allowedRoles: Array<'government' | 'startup' | 'inspector' | 'finance' | 'admin'>) {
+export type RoleName = 'government' | 'startup' | 'inspector' | 'finance' | 'admin' | 'investor';
+export function requireRole(...allowedRoles: RoleName[]) {
   return async function roleGuard(request: FastifyRequest, reply: FastifyReply) {
     const authReq = request as AuthenticatedRequest;
     if (!authReq.user || !allowedRoles.includes(authReq.user.role)) {
@@ -515,4 +546,30 @@ export function generateTempPassword(length = 16): string {
     [chars[i], chars[j]] = [chars[j], chars[i]];
   }
   return chars.join('');
+}
+
+
+// ───────────── Short-lived signed blobs (OAuth state, pending sign-up identity) ─────────────
+// Format: base64url(JSON) + '.' + base64url(HMAC-SHA256). Not a session: it carries no authority by itself.
+export function signBlob(payload: Record<string, unknown>, ttlSeconds: number): string {
+  const body = base64UrlEncode(JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + ttlSeconds }));
+  const sig = crypto.createHmac('sha256', JWT_SECRET + ':blob').update(body).digest('base64url');
+  return `${body}.${sig}`;
+}
+
+export function verifyBlob<T = Record<string, any>>(token: string | undefined | null): T | null {
+  if (!token || typeof token !== 'string') return null;
+  const [body, sig] = token.split('.');
+  if (!body || !sig) return null;
+  const expected = crypto.createHmac('sha256', JWT_SECRET + ':blob').update(body).digest('base64url');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const parsed = JSON.parse(base64UrlDecode(body));
+    if (!parsed.exp || parsed.exp < Math.floor(Date.now() / 1000)) return null;
+    return parsed as T;
+  } catch {
+    return null;
+  }
 }

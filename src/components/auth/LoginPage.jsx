@@ -1,21 +1,53 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useAuth } from '../../store';
+import { useAuth, useApp, useTheme } from '../../store';
 import { authApi } from '../../api';
-import { Shield, Lock, ChevronRight, Eye, EyeOff, AlertCircle, Loader2, Building2, Rocket, Search, Wallet, Settings, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { Logo, ThemeControls } from '../common/ui';
+import { Lock, Eye, EyeOff, AlertCircle, Info, Loader2, Building2, Rocket, Search, Wallet, TrendingUp, Shield, ArrowLeft, CheckCircle2 } from 'lucide-react';
 
 const ROLES = [
-  { key: 'government', label: 'Government Official', icon: Building2, color: '#60a5fa', desc: 'Department officers & mission directors' },
-  { key: 'startup', label: 'Startup Founder', icon: Rocket, color: '#34d399', desc: 'DPIIT-recognised innovators' },
-  { key: 'inspector', label: 'Field Inspector', icon: Search, color: '#a78bfa', desc: 'Independent pilot verifiers' },
-  { key: 'finance', label: 'Finance Officer', icon: Wallet, color: '#fbbf24', desc: 'Treasury & integrated finance' },
-  { key: 'admin', label: 'Super Admin', icon: Settings, color: '#cbd5e1', desc: 'Platform administrators' },
+  { key: 'government', label: 'Government', icon: Building2, desc: 'Officers who post challenges and select startups' },
+  { key: 'startup', label: 'Startup', icon: Rocket, desc: 'DPIIT-recognised startups bidding on challenges' },
+  { key: 'inspector', label: 'Inspector', icon: Search, desc: 'Field verifiers who check pilot results on site' },
+  { key: 'finance', label: 'Finance', icon: Wallet, desc: 'Officers who approve and record payments' },
+  { key: 'investor', label: 'Investor', icon: TrendingUp, desc: 'Private investors and funders exploring startups' },
+  { key: 'admin', label: 'Admin', icon: Shield, desc: 'Platform administrators, set up by invitation' },
 ];
 
-/** Loads Google Identity Services once and renders the official "Continue with Google" button. */
-function GoogleButton({ clientId, role, onCredential }) {
+const SIGNUP = {
+  startup: { lead: 'New here?', link: 'Register your startup', tail: '' },
+  investor: { lead: 'New here?', link: 'Register as an investor', tail: '' },
+  government: { lead: 'New official?', link: 'Request access', tail: 'An administrator approves every request.' },
+  finance: { lead: 'New official?', link: 'Request access', tail: 'An administrator approves every request.' },
+  inspector: { lead: 'New official?', link: 'Request access', tail: 'An administrator approves every request.' },
+  admin: { lead: 'Administrator accounts are created by an existing administrator.', link: '', tail: '' },
+};
+
+export function GoogleG({ size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+    </svg>
+  );
+}
+
+export function GitHubMark({ size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+    </svg>
+  );
+}
+
+/** Google's own rendered button (so the logo and behaviour follow Google's rules), pill-shaped, themed light/dark.
+ *  If Google sign-in is not configured on this server, a disabled look-alike explains why. */
+export function GoogleButton({ clientId, onCredential, width = 240, text = 'signin_with' }) {
   const ref = useRef(null);
   const cb = useRef(onCredential);
   cb.current = onCredential;
+  const { mode } = useTheme();
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -25,7 +57,7 @@ function GoogleButton({ clientId, role, onCredential }) {
       if (cancelled || !window.google?.accounts?.id || !ref.current) return;
       window.google.accounts.id.initialize({ client_id: clientId, callback: (r) => cb.current(r.credential), ux_mode: 'popup', auto_select: false });
       ref.current.innerHTML = '';
-      window.google.accounts.id.renderButton(ref.current, { theme: 'filled_black', size: 'large', shape: 'pill', text: 'continue_with', width: 340, logo_alignment: 'left' });
+      window.google.accounts.id.renderButton(ref.current, { theme: mode === 'dark' ? 'filled_black' : 'outline', size: 'large', shape: 'pill', text, width, logo_alignment: 'left' });
     };
     if (window.google?.accounts?.id) init();
     else {
@@ -40,16 +72,16 @@ function GoogleButton({ clientId, role, onCredential }) {
       return () => { cancelled = true; s.removeEventListener('load', init); };
     }
     return () => { cancelled = true; };
-  }, [clientId, role]);
+  }, [clientId, mode, width, text]);
 
-  if (!clientId) return null;
-  return (
-    <div className="g-wrap">
-      <div className="g-or"><span>or</span></div>
-      <div ref={ref} className="g-btn" aria-label="Continue with Google" />
-      {failed && <p className="auth-hint">Google sign-in could not load (blocked network or extension). Use your email and password instead.</p>}
-    </div>
-  );
+  if (!clientId || failed) {
+    return (
+      <button type="button" className="lp-pill" disabled title={failed ? 'Google could not load (blocked network or extension)' : 'Google sign-in is not set up on this server yet'}>
+        <GoogleG /> Sign in with Google
+      </button>
+    );
+  }
+  return <div ref={ref} className="lp-gwrap" aria-label="Sign in with Google" />;
 }
 
 const REG_FIELDS = [
@@ -67,50 +99,47 @@ function RegisterStartup({ onDone, onCancel }) {
   const [done, setDone] = useState(false);
   const [show, setShow] = useState(false);
   const set = (k) => (e) => setV((x) => ({ ...x, [k]: e.target.value }));
-
   const submit = async (e) => {
     e.preventDefault(); setErr(null); setBusy(true);
     try {
-      const body = { ...v, pan: (v.pan || '').toUpperCase(), gstin: (v.gstin || '').toUpperCase(), ifscCode: (v.ifscCode || '').toUpperCase(), website: v.website || '' };
-      await authApi.registerStartup(body);
+      await authApi.registerStartup({ ...v, pan: (v.pan || '').toUpperCase(), gstin: (v.gstin || '').toUpperCase(), ifscCode: (v.ifscCode || '').toUpperCase(), website: v.website || '' });
       setDone(true);
     } catch (ex) {
-      const d = ex.details && Object.entries(ex.details).filter(([k]) => k !== '_errors').map(([k, x]) => `${k}: ${(x._errors || []).join(', ')}`).join(' • ');
+      const d = ex.details && !Array.isArray(ex.details) && Object.entries(ex.details).filter(([k]) => k !== '_errors').map(([k, x]) => `${k}: ${(x._errors || []).join(', ')}`).join(' • ');
       setErr(Array.isArray(ex.details) ? `${ex.message}: ${ex.details.join('; ')}` : d ? `${ex.message} — ${d}` : ex.message);
     } finally { setBusy(false); }
   };
-
   if (done) {
     return (
-      <div className="auth-card" style={{ textAlign: 'center' }}>
-        <CheckCircle2 size={40} color="#34d399" />
-        <h2 className="auth-h2">Registration received</h2>
-        <p className="auth-hint">Your DPIIT, CIN, PAN and GSTIN details are pending review by a platform administrator. You can sign in now and browse challenges; bidding unlocks after verification.</p>
-        <button className="auth-primary" onClick={onDone}>Go to sign in</button>
+      <div className="lp-card" style={{ textAlign: 'center', alignItems: 'center' }}>
+        <CheckCircle2 size={40} color="var(--success-text)" />
+        <h2>Registration received</h2>
+        <p className="lp-sub">Your DPIIT, CIN, PAN and GSTIN details are pending review by a platform administrator. You can sign in now and browse challenges; bidding unlocks after verification.</p>
+        <button className="lp-primary" style={{ width: '100%' }} onClick={onDone}>Go to sign in</button>
       </div>
     );
   }
   return (
-    <form className="auth-card" onSubmit={submit}>
-      <h2 className="auth-h2">Register your startup</h2>
-      <p className="auth-hint">Statutory identifiers are format-checked on submission. PAN and bank account are encrypted at rest.</p>
-      {err && <div className="auth-error" role="alert"><AlertCircle size={16} /> <span>{err}</span></div>}
-      <div className="reg-grid">
+    <form className="lp-card" onSubmit={submit} style={{ maxWidth: 640 }}>
+      <h2>Register your startup</h2>
+      <p className="lp-sub">Registering with Google or GitHub is quicker: you answer fewer questions now and add the rest later. Use this form if you prefer an email and password.</p>
+      {err && <div className="lp-error" role="alert"><AlertCircle size={16} /> <span>{err}</span></div>}
+      <div className="lp-grid2">
         {REG_FIELDS.map(([k, label, type]) => (
-          <label key={k} className="auth-field">{label}
+          <label key={k} className="lp-field">{label}
             <input type={type} value={v[k] || ''} onChange={set(k)} required={!label.includes('optional')} autoComplete="off" />
           </label>
         ))}
       </div>
-      <label className="auth-field">Password (min 10 characters, upper & lower case, a number and a symbol)
-        <div className="pw-wrap">
+      <label className="lp-field">Password (min 10 characters, upper & lower case, a number and a symbol)
+        <div className="lp-pw">
           <input type={show ? 'text' : 'password'} value={v.password} onChange={set('password')} required autoComplete="new-password" />
           <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? 'Hide password' : 'Show password'}>{show ? <EyeOff size={16} /> : <Eye size={16} />}</button>
         </div>
       </label>
-      <div style={{ display: 'flex', gap: '0.6rem', marginTop: '1rem' }}>
-        <button type="button" className="auth-secondary" onClick={onCancel}>Cancel</button>
-        <button type="submit" className="auth-primary" disabled={busy} style={{ flex: 1 }}>{busy ? <Loader2 size={16} className="spin" /> : null} Register</button>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <button type="button" className="lp-secondary" onClick={onCancel}>Cancel</button>
+        <button type="submit" className="lp-primary" disabled={busy} style={{ flex: 1 }}>{busy ? <Loader2 size={16} className="spin" /> : null} Register</button>
       </div>
     </form>
   );
@@ -118,115 +147,149 @@ function RegisterStartup({ onDone, onCancel }) {
 
 export function LoginPage({ initialRole = null }) {
   const { login, loginWithGoogle, verifyMfa, cancelMfa, mfaChallenge, loginError, setLoginError, config } = useAuth();
+  const { navigate } = useApp();
   const [role, setRole] = useState(initialRole);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState('signin'); // signin | register
+  const [view, setView] = useState('signin'); // signin | register
+  const [hint, setHint] = useState(null);
 
-  const step = mfaChallenge ? 'mfa' : role ? 'credentials' : 'role';
-  const roleInfo = ROLES.find((r) => r.key === role);
-
+  const step = mfaChallenge ? 'mfa' : role ? 'form' : 'role';
+  const info = ROLES.find((r) => r.key === role);
+  const su = SIGNUP[role] || { lead: '', link: '', tail: '' };
   useEffect(() => { if (initialRole) setRole(initialRole); }, [initialRole]);
 
-  const pick = (k) => { setRole(k); setLoginError(null); setMode('signin'); window.history.pushState({}, '', `/login/${k}`); };
+  const pick = (k) => { setRole(k); setLoginError(null); setHint(null); setView('signin'); window.history.pushState({}, '', `/login/${k}`); };
   const back = () => {
-    setLoginError(null); setMode('signin');
+    setLoginError(null); setHint(null); setView('signin');
     if (mfaChallenge) { cancelMfa(); return; }
-    setRole(null); setEmail(''); setPassword('');
-    window.history.pushState({}, '', '/');
+    setRole(null); setEmail(''); setPassword(''); window.history.pushState({}, '', '/');
   };
-
   const submit = async (e) => { e.preventDefault(); if (!email || !password) return; setBusy(true); await login(email.trim(), password, role); setBusy(false); };
   const submitMfa = async (e) => { e.preventDefault(); if (!code) return; setBusy(true); await verifyMfa(code.trim()); setBusy(false); };
-  const onGoogle = async (credential) => { setBusy(true); await loginWithGoogle(credential, role); setBusy(false); };
+  const onGoogle = async (credential) => {
+    setBusy(true);
+    const r = await loginWithGoogle(credential, role || undefined);
+    setBusy(false);
+    if (r?.needsOnboarding) navigate('/signup');
+  };
+  const startSignup = () => {
+    if (role === 'startup') { setView('register'); return; }
+    // Everyone else signs up through a provider that has already verified their email, then answers a few questions.
+    setRole(null); setHint(role); window.history.pushState({}, '', '/');
+  };
+  const hintLabel = ROLES.find((r) => r.key === hint)?.label;
 
   return (
-    <div className="auth-page">
-      <div className="auth-bg" aria-hidden="true" />
-      <header className="auth-top">
-        <div className="brand"><span className="brand-chip">S2S</span><span>Startup2Sarkar</span></div>
-        <span className="auth-top-note"><Shield size={13} /> Role-based • audited • encrypted</span>
+    <div className="lp-page">
+      <header className="lp-top">
+        <Logo size={38} nameSize={21} />
+        <ThemeControls />
       </header>
 
-      <main className="auth-main">
-        <div style={{ width: '100%', maxWidth: step === 'role' ? 760 : mode === 'register' ? 640 : 440, transition: 'max-width .3s ease' }}>
-          {step !== 'role' && !(mode === 'register') && (
-            <button className="auth-back" onClick={back}><ArrowLeft size={15} /> {step === 'mfa' ? 'Back' : 'Change role'}</button>
-          )}
+      <main className="lp-main">
+        <section className="lp-hero">
+          <span className="lp-eyebrow lp-rise">Public innovation procurement</span>
+          <h1 className="lp-rise" style={{ animationDelay: '.1s' }}>From pilot to payment, every step on record.</h1>
+          <p className="lp-rise" style={{ animationDelay: '.2s' }}>Post a challenge, review startup proposals, run a monitored pilot, verify results on site and release milestone payments, all in one system.</p>
+          <div className="lp-loop" aria-hidden="true">
+            <svg viewBox="0 0 520 200" style={{ width: '100%', height: 'auto', display: 'block' }}>
+              <path d="M10 170 H510" style={{ stroke: 'var(--slate-200)' }} strokeWidth="3" strokeLinecap="round" fill="none" />
+              <path d="M40 170 A220 140 0 0 1 480 170" style={{ stroke: 'var(--brand)' }} strokeWidth="5" strokeLinecap="round" fill="none" />
+              <g strokeWidth="2" strokeLinecap="round" style={{ stroke: 'var(--slate-500)' }}>
+                {[[95, 77.4], [150, 48.8], [205, 34.4], [260, 30], [315, 34.4], [370, 48.8], [425, 77.4]].map(([x, y]) => <line key={x} x1={x} y1={y} x2={x} y2="170" />)}
+              </g>
+              <polygon points="446,152 514,152 480,130" style={{ fill: 'var(--ink)' }} />
+              {[454, 468, 482, 496].map((x) => <rect key={x} x={x} y="154" width="8" height="16" style={{ fill: 'var(--ink)' }} />)}
+              <circle className="lp-pulse" cx="26" cy="140" r="7" style={{ fill: 'var(--accent)' }} />
+              <circle className="lp-spark" cx="40" cy="170" r="7" style={{ fill: 'var(--accent)' }} />
+            </svg>
+          </div>
+          <div className="lp-chips">
+            <span className="lp-rise" style={{ animationDelay: '.5s' }}>Access limited by role</span>
+            <span className="lp-rise" style={{ animationDelay: '.6s' }}>Audit log that flags any alteration</span>
+            <span className="lp-rise" style={{ animationDelay: '.7s' }}>Bank details encrypted</span>
+          </div>
+        </section>
 
-          {mode === 'register' ? (
-            <RegisterStartup onDone={() => setMode('signin')} onCancel={() => setMode('signin')} />
-          ) : (
-            <>
-              <div style={{ textAlign: 'center', marginBottom: '1.75rem' }}>
-                <h1 className="auth-h1">
-                  {step === 'role' && 'Choose how you sign in'}
-                  {step === 'credentials' && `${roleInfo.label} sign in`}
-                  {step === 'mfa' && 'Two-step verification'}
-                </h1>
-                <p className="auth-hint">
-                  {step === 'role' && 'Each role has its own gateway and sees only its own data.'}
-                  {step === 'credentials' && 'Use the account issued to you.'}
-                  {step === 'mfa' && (mfaChallenge?.message || 'Enter the 6-digit code from your authenticator app, or a recovery code.')}
-                </p>
-              </div>
+        {view === 'register' && step !== 'mfa' ? (
+          <RegisterStartup onDone={() => setView('signin')} onCancel={() => setView('signin')} />
+        ) : (
+          <section className="lp-card lp-rise" style={{ animationDelay: '.25s' }}>
+            {loginError && <div className="lp-error" role="alert"><AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} /> <span>{loginError}</span></div>}
 
-              {loginError && <div className="auth-error" role="alert"><AlertCircle size={16} /> <span>{loginError}</span></div>}
-
-              {step === 'role' && (
-                <div className="role-grid">
+            {step === 'role' && (
+              <>
+                <div>
+                  <h2>Choose how you sign in</h2>
+                  <p className="lp-sub">Each role opens its own workspace and sees only its own data.</p>
+                </div>
+                {hint && (
+                  <div className="lp-info" role="status"><Info size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <span>To {hint === 'investor' ? 'register as an investor' : 'request access as ' + hintLabel + ' staff'}, sign in with Google or GitHub below. We will ask a few quick questions next.</span>
+                  </div>
+                )}
+                <div className="lp-social">
+                  <GoogleButton clientId={config.googleClientId} onCredential={onGoogle} width={240} />
+                  {config.githubEnabled
+                    ? <a className="lp-pill gh" href={authApi.githubLoginUrl}><GitHubMark /> Sign in with GitHub</a>
+                    : <button type="button" className="lp-pill gh" disabled title="GitHub sign-in is not set up on this server yet"><GitHubMark /> Sign in with GitHub</button>}
+                </div>
+                <p className="lp-note">New here? Signing in with Google or GitHub creates your account after a few quick questions.</p>
+                <div className="lp-divider"><span>or choose your role</span></div>
+                <div className="lp-roles">
                   {ROLES.map((r) => {
                     const Icon = r.icon;
                     return (
-                      <button key={r.key} className="role-card" style={{ '--c': r.color }} onClick={() => pick(r.key)}>
-                        <span className="role-ico"><Icon size={20} color={r.color} /></span>
-                        <span className="role-name">{r.label}</span>
-                        <span className="role-desc">{r.desc}</span>
-                        <span className="role-go">Enter <ChevronRight size={14} /></span>
+                      <button key={r.key} type="button" className="lp-role" onClick={() => pick(r.key)}>
+                        <span className="ico"><Icon size={20} /></span>
+                        <b>{r.label}</b>
+                        <span>{r.desc}</span>
                       </button>
                     );
                   })}
                 </div>
-              )}
+              </>
+            )}
 
-              {step === 'credentials' && (
-                <form className="auth-card" onSubmit={submit}>
-                  <label className="auth-field">Email
-                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required autoFocus />
-                  </label>
-                  <label className="auth-field">Password
-                    <div className="pw-wrap">
-                      <input type={show ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
-                      <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? 'Hide password' : 'Show password'}>{show ? <EyeOff size={16} /> : <Eye size={16} />}</button>
-                    </div>
-                  </label>
-                  <button type="submit" className="auth-primary" disabled={busy}>
-                    {busy ? <><Loader2 size={16} className="spin" /> Signing in…</> : <><Lock size={15} /> Sign in</>}
-                  </button>
-                  <GoogleButton clientId={config.googleClientId} role={role} onCredential={onGoogle} />
-                  {role === 'startup' && (
-                    <p className="auth-hint" style={{ textAlign: 'center', marginBottom: 0 }}>
-                      New here? <button type="button" className="auth-link" onClick={() => { setLoginError(null); setMode('register'); }}>Register your startup</button>
-                    </p>
-                  )}
-                  {role !== 'startup' && <p className="auth-hint" style={{ textAlign: 'center', marginBottom: 0 }}>Accounts for this role are created by your platform administrator.</p>}
-                </form>
-              )}
+            {step === 'form' && (
+              <form onSubmit={submit} style={{ display: 'contents' }}>
+                <button type="button" className="lp-back" onClick={back}><ArrowLeft size={16} /> Change role</button>
+                <h2>{info.label} sign in</h2>
+                <label className="lp-field">Email
+                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required autoFocus placeholder="you@example.com" />
+                </label>
+                <label className="lp-field">Password
+                  <div className="lp-pw">
+                    <input type={show ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required placeholder="Your password" />
+                    <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? 'Hide password' : 'Show password'}>{show ? <EyeOff size={16} /> : <Eye size={16} />}</button>
+                  </div>
+                </label>
+                <button type="submit" className="lp-primary" disabled={busy}>{busy ? <><Loader2 size={16} className="spin" /> Signing in…</> : <><Lock size={15} /> Sign in</>}</button>
+                <div className="lp-divider"><span>or</span></div>
+                <div className="lp-gwrap" style={{ display: 'flex', justifyContent: 'center' }}><GoogleButton clientId={config.googleClientId} onCredential={onGoogle} width={300} /></div>
+                <div className="lp-foot">
+                  {su.lead} {su.link && <button type="button" className="lp-link" onClick={startSignup}>{su.link}</button>} {su.tail}
+                </div>
+              </form>
+            )}
 
-              {step === 'mfa' && (
-                <form className="auth-card" onSubmit={submitMfa}>
-                  <label className="auth-field">Authentication code
-                    <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="text" autoComplete="one-time-code" maxLength={24} autoFocus required className="code-input" />
-                  </label>
-                  <button type="submit" className="auth-primary" disabled={busy}>{busy ? <Loader2 size={16} className="spin" /> : <Shield size={15} />} Verify</button>
-                </form>
-              )}
-            </>
-          )}
-        </div>
+            {step === 'mfa' && (
+              <form onSubmit={submitMfa} style={{ display: 'contents' }}>
+                <button type="button" className="lp-back" onClick={back}><ArrowLeft size={16} /> Back</button>
+                <h2>Two-step verification</h2>
+                <p className="lp-sub">{mfaChallenge?.message || 'Enter the 6-digit code from your authenticator app, or a recovery code.'}</p>
+                <label className="lp-field">Authentication code
+                  <input className="lp-code" value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" maxLength={24} autoFocus required />
+                </label>
+                <button type="submit" className="lp-primary" disabled={busy}>{busy ? <Loader2 size={16} className="spin" /> : <Shield size={15} />} Verify</button>
+              </form>
+            )}
+          </section>
+        )}
       </main>
     </div>
   );
