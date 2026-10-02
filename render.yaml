@@ -1,17 +1,15 @@
 # Render Blueprint — deploys the app as one web service. Postgres is external (e.g. Supabase) via DATABASE_URL.
 # Secrets marked sync:false are entered once in the Render dashboard; they are never stored in this file.
+# FREE plan for trials: the instance sleeps after inactivity (slow first request) and uploaded files do not survive redeploys.
+# For real use switch to a paid plan (e.g. starter) and add a disk:  disk: { name: s2s-data, mountPath: /data, sizeGB: 1 }
 services:
   - type: web
     name: startup2sarkar
     runtime: docker
-    plan: starter            # persistent disks need a paid plan; free plans sleep and have an ephemeral disk
+    plan: free
     region: singapore        # closest Render region to India
     healthCheckPath: /health
     autoDeploy: true
-    disk:
-      name: s2s-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - { key: NODE_ENV, value: production }
       - { key: JWT_SECRET, generateValue: true }

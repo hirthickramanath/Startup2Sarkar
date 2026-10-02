@@ -31,7 +31,9 @@ New → Blueprint → select the repo (reads `render.yaml`). Enter when prompted
 
 After deploy: open `/health` (should say UP), add the site URL to Google's authorized origins, then read the generated admin password from the service log (printed once) and sign in as Super Admin; you will be asked to change it.
 
-Persistent disks need a paid Render plan; without one, uploaded files disappear on redeploy and the free plan sleeps when idle.
+`render.yaml` uses Render's **free** plan so you can trial without paying: the service sleeps when idle (the first request after a pause is slow) and uploaded files do not survive a redeploy. For real use switch to a paid plan and add the persistent disk shown in the comment at the top of `render.yaml`.
+
+**If Render still asks for a card for the Blueprint**, create the service by hand instead: New → Web Service → pick the repo → Runtime **Docker**, Region **Singapore**, Instance type **Free**, Health Check Path `/health`, then add the environment variables from the table above plus `NODE_ENV=production`, and generate the three secrets yourself with `openssl rand -hex 32` (or any random 64-character string).
 
 ### Any other Docker host
 
