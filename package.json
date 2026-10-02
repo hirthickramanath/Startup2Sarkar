@@ -1,0 +1,52 @@
+{
+  "name": "startup2sarkar",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server:dev": "tsx watch server/src/server.ts",
+    "start": "node --import tsx server/src/server.ts",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "test": "tsx --test server/tests/*.test.ts",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/multipart": "^10.1.2",
+    "@fastify/rate-limit": "^11.2.0",
+    "@fastify/static": "^10.1.5",
+    "@fastify/swagger": "^9.9.0",
+    "@fastify/swagger-ui": "^6.1.1",
+    "@mojs/core": "^1.3.0",
+    "@node-rs/argon2": "^2.2.1",
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-tooltip": "^1.2.16",
+    "fastify": "^5.12.5",
+    "lucide-react": "^1.49.0",
+    "otplib": "^13.5.0",
+    "pg": "^8.23.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.6.5",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "oxlint": "^1.81.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "description": "Startup2Sarkar \u2014 outcome-based innovation procurement platform (challenges \u2192 proposals \u2192 pilots \u2192 verified milestone payments)"
+}
