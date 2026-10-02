@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url';
 import { DatabaseAdapter, getDatabase, runMigrations } from './db';
 import { AuditService } from './audit';
 import { SovereignAiProvider, AiProvider } from './ai';
-import { LocalStorageProvider, ManualTreasuryProvider, DevelopmentEmailProvider } from './adapters';
+import { LocalStorageProvider, ManualTreasuryProvider, createEmailProvider, EmailProvider } from './adapters';
 import { JwksFetcher } from './security';
 
 import { authRoutes } from './routes/auth';
@@ -35,6 +35,8 @@ export interface AppOptions {
   jwksFetcher?: JwksFetcher;
   /** Test hook: replace the network client used to talk to GitHub */
   githubFetch?: typeof fetch;
+  /** Test hook / alternative mail provider */
+  emailProvider?: EmailProvider;
   /** Directory of the built SPA; defaults to <repo>/dist */
   staticDir?: string;
 }
@@ -88,7 +90,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const aiProvider = options.aiProvider || new SovereignAiProvider();
   const storageProvider = new LocalStorageProvider();
   const treasuryProvider = new ManualTreasuryProvider();
-  const emailProvider = new DevelopmentEmailProvider();
+  const emailProvider = options.emailProvider ?? createEmailProvider();
 
   // 1. Security plugins ───────────────────────────────────────────────
   const allowedOrigins = (process.env.CORS_ORIGIN || '').split(',').map((o) => o.trim()).filter(Boolean);
@@ -141,7 +143,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   // 4. API ───────────────────────────────────────────────────────────────
   app.register(async (api) => {
     api.register(authRoutes, { prefix: '/auth', db, auditService });
-    api.register(identityRoutes, { prefix: '/auth', db, auditService, jwksFetcher: options.jwksFetcher, githubFetch: options.githubFetch });
+    api.register(identityRoutes, { prefix: '/auth', db, auditService, jwksFetcher: options.jwksFetcher, githubFetch: options.githubFetch, emailProvider });
     api.register(networkRoutes, { prefix: '/network', db, auditService });
     api.register(challengeRoutes, { prefix: '/challenges', db, auditService, aiProvider });
     api.register(proposalRoutes, { prefix: '/proposals', db, auditService, aiProvider });

@@ -264,6 +264,48 @@ export async function challengeRoutes(
   });
 
   // Close a challenge to new proposals (government of the owning department, or admin)
+  // Extend the deadline of a live challenge
+  app.post('/:id/extend-deadline', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ deadline: z.string().refine((d) => !Number.isNaN(Date.parse(d)), 'Invalid date'), reason: z.string().trim().min(10).max(500) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Give a new date and a reason of at least 10 characters.' });
+    const ch = (await db.query('SELECT id, status, department_id, deadline FROM challenges WHERE id = $1', [id])).rows[0];
+    if (!ch) return reply.status(404).send({ error: 'Challenge not found' });
+    if (authReq.user.role === 'government' && authReq.user.departmentId && ch.department_id !== authReq.user.departmentId) return reply.status(403).send({ error: 'Forbidden: this challenge belongs to another department' });
+    if (!['PUBLISHED', 'PROPOSALS_RECEIVED'].includes(ch.status)) return reply.status(409).send({ error: `The deadline of a challenge in status '${ch.status}' cannot be extended.` });
+    const next = new Date(parsed.data.deadline);
+    if (next.getTime() <= Date.now() || next.getTime() <= new Date(ch.deadline).getTime()) return reply.status(400).send({ error: 'The new deadline must be in the future and later than the current one.' });
+    await db.query('UPDATE challenges SET deadline = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [next.toISOString(), id]);
+    await db.query(`INSERT INTO challenge_addenda (id, challenge_id, title, body, created_by_user_id) VALUES ($1,$2,'Deadline extended',$3,$4)`, [`ADD-${Date.now()}-${Math.floor(Math.random() * 1000)}`, id, `The deadline is now ${next.toISOString().slice(0, 10)}. ${parsed.data.reason}`, authReq.user.userId]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'CHALLENGE_DEADLINE_EXTENDED', entityType: 'CHALLENGE', entityId: id, details: { newDeadline: next.toISOString(), reason: parsed.data.reason }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true });
+  });
+
+  // Addenda: official clarifications every bidder can read
+  app.post('/:id/addenda', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ title: z.string().trim().min(3).max(120), body: z.string().trim().min(10).max(2000) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Add a title and a message of at least 10 characters.' });
+    const ch = (await db.query('SELECT id, status, department_id FROM challenges WHERE id = $1', [id])).rows[0];
+    if (!ch) return reply.status(404).send({ error: 'Challenge not found' });
+    if (authReq.user.role === 'government' && authReq.user.departmentId && ch.department_id !== authReq.user.departmentId) return reply.status(403).send({ error: 'Forbidden: this challenge belongs to another department' });
+    if (ch.status === 'DRAFT') return reply.status(409).send({ error: 'Publish the challenge before posting addenda.' });
+    const addId = `ADD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    await db.query('INSERT INTO challenge_addenda (id, challenge_id, title, body, created_by_user_id) VALUES ($1,$2,$3,$4,$5)', [addId, id, parsed.data.title, parsed.data.body, authReq.user.userId]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'CHALLENGE_ADDENDUM_POSTED', entityType: 'CHALLENGE', entityId: id, details: { addendumId: addId, title: parsed.data.title }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.status(201).send({ success: true, id: addId });
+  });
+
+  app.get('/:id/addenda', { preHandler: [authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const ch = (await db.query('SELECT status FROM challenges WHERE id = $1', [id])).rows[0];
+    if (!ch || (ch.status === 'DRAFT' && (request as AuthenticatedRequest).user.role !== 'government' && (request as AuthenticatedRequest).user.role !== 'admin')) return reply.status(404).send({ error: 'Challenge not found' });
+    const rows = (await db.query('SELECT id, title, body, created_at FROM challenge_addenda WHERE challenge_id = $1 ORDER BY created_at DESC', [id])).rows;
+    return reply.send({ addenda: rows });
+  });
+
   app.post('/:id/close', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const authReq = request as AuthenticatedRequest;

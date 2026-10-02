@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { useApp } from '../../../store';
 import { StatusBadge, DataTable, PageHeader, EmptyState, inrPaise } from '../../common/ui';
 
-const FILTERS = [['ALL', 'All'], ['PENDING', 'Needs review'], ['APPROVED', 'Approved'], ['ON_HOLD', 'On hold'], ['PAID', 'Paid'], ['REJECTED', 'Rejected']];
-const PENDING = ['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'FINANCE_REVIEW'];
+const FILTERS = [['ALL', 'All'], ['PENDING', 'Needs review'], ['APPROVED', 'Approved'], ['CHEQUE_ISSUED', 'Cheques out'], ['ON_HOLD', 'On hold'], ['PAID', 'Paid'], ['REJECTED', 'Rejected']];
+const PENDING = ['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'FINANCE_REVIEW', 'AWAITING_SECOND_APPROVAL'];
 
 export function FinancePaymentsList() {
   const { state, navigate } = useApp();
@@ -20,7 +20,7 @@ export function FinancePaymentsList() {
   ];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-      <PageHeader title="Payment claims" subtitle="Maker-checker applies: whoever raised a claim cannot approve it." />
+      <PageHeader title="Payment claims" subtitle="Maker-checker applies. Large payments need two different approvers, and a third person records the payment." />
       <div style={{ display: 'flex', gap: '.4rem', flexWrap: 'wrap' }}>
         {FILTERS.map(([k, l]) => <button key={k} className={`btn btn-sm ${f === k ? 'btn-primary' : 'btn-outline'}`} onClick={() => setF(k)}>{l}</button>)}
       </div>

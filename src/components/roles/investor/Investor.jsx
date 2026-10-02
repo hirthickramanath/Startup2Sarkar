@@ -161,7 +161,7 @@ export function InvestorProfile() {
           <div><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</button></div>
         </form>
       )}
-      <LinkedAccounts />
+      <LinkedAccounts allowGithub={false} />
       <ProfileLinks />
     </div>
   );

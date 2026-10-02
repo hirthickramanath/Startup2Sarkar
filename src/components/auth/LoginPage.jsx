@@ -81,7 +81,7 @@ export function GoogleButton({ clientId, onCredential, width = 240, text = 'sign
       </button>
     );
   }
-  return <div ref={ref} className="lp-gwrap" aria-label="Sign in with Google" />;
+  return <div ref={ref} className="lp-gwrap" aria-label="Sign in with Google" style={{ colorScheme: 'light' }} />;
 }
 
 const REG_FIELDS = [
@@ -156,6 +156,7 @@ export function LoginPage({ initialRole = null }) {
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState('signin'); // signin | register
   const [hint, setHint] = useState(null);
+  const [forgot, setForgot] = useState(null); // null | { sent: bool }
 
   const step = mfaChallenge ? 'mfa' : role ? 'form' : 'role';
   const info = ROLES.find((r) => r.key === role);
@@ -172,16 +173,16 @@ export function LoginPage({ initialRole = null }) {
   const submitMfa = async (e) => { e.preventDefault(); if (!code) return; setBusy(true); await verifyMfa(code.trim()); setBusy(false); };
   const onGoogle = async (credential) => {
     setBusy(true);
+    try { if (role) sessionStorage.setItem('s2s_signup_role', role); } catch { /* private mode */ }
     const r = await loginWithGoogle(credential, role || undefined);
     setBusy(false);
     if (r?.needsOnboarding) navigate('/signup');
   };
   const startSignup = () => {
     if (role === 'startup') { setView('register'); return; }
-    // Everyone else signs up through a provider that has already verified their email, then answers a few questions.
-    setRole(null); setHint(role); window.history.pushState({}, '', '/');
+    // Everyone else signs up through Google (which has already verified their email), then answers a few questions.
+    setHint(role === 'investor' ? 'To register as an investor, sign in with Google below. We will ask a few quick questions next.' : 'To request access, sign in with Google below. We will ask for your department and designation, and an administrator will approve the request.');
   };
-  const hintLabel = ROLES.find((r) => r.key === hint)?.label;
 
   return (
     <div className="lp-page">
@@ -227,19 +228,6 @@ export function LoginPage({ initialRole = null }) {
                   <h2>Choose how you sign in</h2>
                   <p className="lp-sub">Each role opens its own workspace and sees only its own data.</p>
                 </div>
-                {hint && (
-                  <div className="lp-info" role="status"><Info size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-                    <span>To {hint === 'investor' ? 'register as an investor' : 'request access as ' + hintLabel + ' staff'}, sign in with Google or GitHub below. We will ask a few quick questions next.</span>
-                  </div>
-                )}
-                <div className="lp-social">
-                  <GoogleButton clientId={config.googleClientId} onCredential={onGoogle} width={240} />
-                  {config.githubEnabled
-                    ? <a className="lp-pill gh" href={authApi.githubLoginUrl}><GitHubMark /> Sign in with GitHub</a>
-                    : <button type="button" className="lp-pill gh" disabled title="GitHub sign-in is not set up on this server yet"><GitHubMark /> Sign in with GitHub</button>}
-                </div>
-                <p className="lp-note">New here? Signing in with Google or GitHub creates your account after a few quick questions.</p>
-                <div className="lp-divider"><span>or choose your role</span></div>
                 <div className="lp-roles">
                   {ROLES.map((r) => {
                     const Icon = r.icon;
@@ -269,8 +257,20 @@ export function LoginPage({ initialRole = null }) {
                   </div>
                 </label>
                 <button type="submit" className="lp-primary" disabled={busy}>{busy ? <><Loader2 size={16} className="spin" /> Signing in…</> : <><Lock size={15} /> Sign in</>}</button>
+                {config.emailEnabled ? (
+                  forgot?.sent
+                    ? <div className="lp-info" role="status"><Info size={16} style={{ flexShrink: 0, marginTop: 2 }} /><span>If that email belongs to an account, a reset link is on its way. It works once and expires in 30 minutes.</span></div>
+                    : <button type="button" className="lp-link" style={{ alignSelf: 'center' }} onClick={async () => { if (!email.trim()) { setLoginError('Type your email above first, then choose "Forgot password?".'); return; } setLoginError(null); await authApi.forgotPassword(email.trim()).catch(() => {}); setForgot({ sent: true }); }}>Forgot password?</button>
+                ) : <p className="lp-note" style={{ textAlign: 'center' }}>Forgot your password? Ask your administrator to reset it.</p>}
                 <div className="lp-divider"><span>or</span></div>
-                <div className="lp-gwrap" style={{ display: 'flex', justifyContent: 'center' }}><GoogleButton clientId={config.googleClientId} onCredential={onGoogle} width={300} /></div>
+                {hint && <div className="lp-info" role="status"><Info size={16} style={{ flexShrink: 0, marginTop: 2 }} /><span>{hint}</span></div>}
+                <div className={role === 'startup' ? 'lp-social' : ''} style={role === 'startup' ? undefined : { display: 'flex', justifyContent: 'center' }}>
+                  <GoogleButton clientId={config.googleClientId} onCredential={onGoogle} width={role === 'startup' ? 240 : 300} />
+                  {role === 'startup' && (config.githubEnabled
+                    ? <a className="lp-pill gh" href={authApi.githubLoginUrl} onClick={() => { try { sessionStorage.setItem('s2s_signup_role', 'startup'); } catch { /* private mode */ } }}><GitHubMark /> Sign in with GitHub</a>
+                    : <button type="button" className="lp-pill gh" disabled title="GitHub sign-in is not set up on this server yet"><GitHubMark /> Sign in with GitHub</button>)}
+                </div>
+                <p className="lp-note">New here? Signing in with Google{role === 'startup' ? ' or GitHub' : ''} creates your account after a few quick questions.</p>
                 <div className="lp-foot">
                   {su.lead} {su.link && <button type="button" className="lp-link" onClick={startSignup}>{su.link}</button>} {su.tail}
                 </div>

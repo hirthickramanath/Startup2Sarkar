@@ -33,7 +33,9 @@ const STATUS_LABEL = {
   ON_HOLD: 'On Hold', PROCESSING: 'Processing', DISPUTED: 'Disputed',
   DETECTED: 'Detected', INVESTIGATING: 'Investigating', RESOLVED: 'Resolved', DISMISSED: 'Dismissed',
 };
-export const statusLabel = (s) => (s ? STATUS_LABEL[String(s).toUpperCase()] || String(s) : '');
+// Any status without a hand-written label is shown as plain words ("CHEQUE_ISSUED" -> "Cheque issued"), never as a raw code.
+const humanise = (s) => String(s).toLowerCase().replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+export const statusLabel = (s) => (s ? STATUS_LABEL[String(s).toUpperCase()] || (/^[A-Z0-9_]+$/.test(String(s)) ? humanise(s) : String(s)) : '');
 
 function normalizeChallenge(c) {
   const budgetPaise = num(c.budget_paise);
@@ -146,16 +148,20 @@ function normalizePayment(p) {
     penaltyPaise: num(p.penalty_deduction_paise),
     grossAmount: rupees(gross), netPayable: rupees(p.net_payable_paise), tdsDeduction: rupees(p.tds_paise), gstTdsDeduction: rupees(p.gst_paise),
     status: statusLabel(p.status), rawStatus: p.status, holdReason: p.hold_reason || '',
-    requesterId: p.requester_user_id, date: day(p.created_at),
+    requesterId: p.requester_user_id, firstReviewerId: p.first_reviewer_user_id || null, approverId: p.approver_user_id || null, date: day(p.created_at),
+    paymentMethod: p.payment_method || null, chequeNumber: p.cheque_number || '', chequeDate: p.cheque_day || '', draweeBank: p.drawee_bank || '', signatories: p.cheque_signatories || '',
+    chequeHistory: Array.isArray(p.cheque_history) ? p.cheque_history : [],
     paidDate: day(p.disbursed_at), disbursementReference: p.disbursement_reference || '',
     demoTransactionId: p.disbursement_reference || null,
-    slaDaysRemaining: ['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'FINANCE_REVIEW', 'APPROVED'].includes(p.status)
+    slaDaysRemaining: ['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'FINANCE_REVIEW', 'AWAITING_SECOND_APPROVAL', 'APPROVED', 'CHEQUE_ISSUED'].includes(p.status)
       ? PAYMENT_SLA_DAYS - Math.floor((Date.now() - new Date(p.created_at).getTime()) / 864e5) : null,
     timeline: [
       { time: String(p.created_at || '').slice(0, 16).replace('T', ' '), actor: p.startup_name || 'Startup', action: `Claim ${p.invoice_number} submitted` },
       ...(p.hold_reason ? [{ time: String(p.updated_at || '').slice(0, 16).replace('T', ' '), actor: 'Finance', action: `${statusLabel(p.status)}: ${p.hold_reason}` }] : []),
+      ...(p.first_reviewer_user_id ? [{ time: String(p.updated_at || '').slice(0, 16).replace('T', ' '), actor: 'Finance', action: 'First approval recorded (two-person rule)' }] : []),
       ...(p.approver_user_id && !p.disbursed_at ? [{ time: String(p.updated_at || '').slice(0, 16).replace('T', ' '), actor: 'Finance', action: 'Approved (maker-checker satisfied)' }] : []),
-      ...(p.disbursed_at ? [{ time: String(p.disbursed_at).slice(0, 16).replace('T', ' '), actor: 'Finance', action: `Disbursed — bank reference ${p.disbursement_reference}` }] : []),
+      ...(p.cheque_number ? [{ time: String(p.cheque_issued_at || p.updated_at || '').slice(0, 16).replace('T', ' '), actor: 'Finance', action: `Cheque ${p.cheque_number} (${p.drawee_bank}) issued` }] : []),
+      ...(p.disbursed_at ? [{ time: String(p.disbursed_at).slice(0, 16).replace('T', ' '), actor: 'Finance', action: p.payment_method === 'CHEQUE' ? `Cheque cleared — ${p.disbursement_reference}` : `Disbursed — bank reference ${p.disbursement_reference}` }] : []),
     ],
   };
 }
@@ -164,7 +170,7 @@ function normalizeDepartment(d) {
   return {
     id: d.id, name: d.name, code: d.code, ministry: d.ministry || d.name, description: d.description || '', isActive: d.is_active !== false,
     budgetAllocatedPaise: num(d.budget_allocated_paise), budgetCommittedPaise: num(d.budget_committed_paise), budgetDisbursedPaise: num(d.budget_disbursed_paise),
-    budgetAllocated: rupees(d.budget_allocated_paise), budgetCommitted: rupees(d.budget_committed_paise), budgetDisbursed: rupees(d.budget_disbursed_paise),
+    chequesInTransitPaise: num(d.cheques_in_transit_paise), budgetAllocated: rupees(d.budget_allocated_paise), budgetCommitted: rupees(d.budget_committed_paise), budgetDisbursed: rupees(d.budget_disbursed_paise),
   };
 }
 
@@ -232,7 +238,7 @@ export function ThemeProvider({ children }) {
   const read = (k, ok, fallback) => { try { const v = localStorage.getItem(k); return ok.includes(v) ? v : fallback; } catch { return fallback; } };
   const systemMode = () => (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   const [theme, setThemeState] = useState(() => read('s2s_theme', ['graphite', 'burst', 'meadow'], 'graphite'));
-  const [mode, setModeState] = useState(() => read('s2s_mode', ['light', 'dark'], systemMode()));
+  const [mode, setModeState] = useState(() => read('s2s_mode', ['light', 'dark'], 'light'));
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     document.documentElement.setAttribute('data-mode', mode);
@@ -272,7 +278,7 @@ export function AuthProvider({ children }) {
   const [isLoading, setIsLoading] = useState(true);
   const [loginError, setLoginError] = useState(null);
   const [mfaChallenge, setMfaChallenge] = useState(null);
-  const [config, setConfig] = useState({ googleClientId: null, githubEnabled: false, aiMode: 'local' });
+  const [config, setConfig] = useState({ googleClientId: null, githubEnabled: false, emailEnabled: false, aiMode: 'local' });
 
   const clearSession = useCallback(() => {
     setUser(null); clearAuthToken(); sessionStorage.removeItem(TOKEN_KEY); setMfaChallenge(null);
@@ -292,6 +298,7 @@ export function AuthProvider({ children }) {
         github_denied: 'GitHub sign-in was cancelled.',
         github_failed: 'GitHub did not complete the sign-in. Please try again.',
         github_not_configured: 'GitHub sign-in is not set up on this server yet.',
+        github_startup_only: 'GitHub sign-in is available to startups only. Use Google or your password for this account.',
         no_verified_email: 'That account has no verified email address. Verify one with the provider, or sign in another way.',
         auth_failed: 'We could not sign you in with that account.',
       };
@@ -486,6 +493,7 @@ export function AppProvider({ children }) {
       auditLogs: (auditRes?.logs || []).map(normalizeAuditLog),
       notifications: (notifRes?.notifications || []).map(normalizeNotification),
       accessRequests: accessRes?.requests || [],
+      budgetAsOf: budgetRes?.asOf || null,
       myOrganization: orgRes?.organization ? normalizeStartup(orgRes.organization) : null,
       settings: settingsRes?.settings || null,
       auditIntegrity: auditRes?.integrity || null,
@@ -591,6 +599,9 @@ export function AppProvider({ children }) {
 
   /* ── Finance ──────────────────────────────────────────────────────────── */
   const approvePayment = (id, remarks) => act(() => financeApi.approve(id, remarks), 'Claim approved. Record the bank reference once the transfer is made.');
+  const recordCheque = (id, d) => act(() => financeApi.issueCheque(id, d), 'Cheque recorded. It counts as paid once it clears.');
+  const clearCheque = (id, date) => act(() => financeApi.clearCheque(id, date), 'Cheque cleared. Payment recorded as paid.');
+  const bounceCheque = (id, reason) => act(() => financeApi.bounceCheque(id, reason), 'Cheque marked as returned. The claim is approved again.');
   const recordDisbursement = (id, utr) => act(() => financeApi.disburse(id, utr), 'Disbursement recorded');
   const putPaymentOnHold = (id, reason) => act(() => financeApi.hold(id, reason), 'Claim placed on hold');
   const rejectPayment = (id, reason) => act(() => financeApi.reject(id, reason), 'Claim rejected');
@@ -623,7 +634,7 @@ export function AppProvider({ children }) {
     createChallenge, publishChallenge, closeChallenge, evaluateProposalsAI, approveShortlist, assignInspector, forwardPilotToFinance,
     submitProposal, submitKpiEvidence, submitMilestone, submitClaim,
     verifyKpiEvidence, verifyMilestone, submitInspectionReport,
-    approvePayment, recordDisbursement, putPaymentOnHold, rejectPayment, resolveAnomaly,
+    approvePayment, recordCheque, clearCheque, bounceCheque, recordDisbursement, putPaymentOnHold, rejectPayment, resolveAnomaly,
     markNotificationRead, markAllNotificationsRead,
     isSearchOpen, setIsSearchOpen,
     isAssistantOpen, openAssistant, closeAssistant, assistantContext,
@@ -642,11 +653,13 @@ export function useApp() {
   return ctx;
 }
 
-/** The brand intro plays once per browser session, never under reduced-motion. (Kept here so App can decide without importing the intro bundle.) */
+/** The brand intro plays on every normal page load (visitors can skip it).
+ *  It is skipped on pages that continue a task in progress: finishing a sign-up, a password-reset link, or coming back from GitHub with a message. */
 export function shouldShowIntro() {
   try {
-    if (sessionStorage.getItem('s2s_intro_seen')) return false;
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return false;
-    return true;
-  } catch { return false; }
+    const { pathname, search, hash } = window.location;
+    if (pathname === '/signup' || pathname === '/reset-password') return false;
+    if (/[?&]error=/.test(search) || /mfa=/.test(hash)) return false;
+  } catch { /* no window */ }
+  return true;
 }

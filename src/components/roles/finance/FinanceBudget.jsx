@@ -1,6 +1,6 @@
 import React from 'react';
 import { useApp } from '../../../store';
-import { PageHeader, EmptyState, DataTable, inr } from '../../common/ui';
+import { PageHeader, EmptyState, DataTable, inr, inrPaise } from '../../common/ui';
 
 const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
 
@@ -10,7 +10,8 @@ export function FinanceBudget() {
     { key: 'name', header: 'Department', render: (v, r) => <div><strong>{v}</strong><div style={{ fontSize: '.74rem', color: 'var(--slate-500)' }}>{r.code} • {r.ministry}</div></div> },
     { key: 'budgetAllocated', header: 'Allocated', width: '140px', render: (v) => <strong>{inr(v)}</strong> },
     { key: 'budgetCommitted', header: 'Committed', width: '140px', render: (v) => inr(v) },
-    { key: 'budgetDisbursed', header: 'Disbursed', width: '140px', render: (v) => <span style={{ color: 'var(--success-text)' }}>{inr(v)}</span> },
+    { key: 'chequesInTransitPaise', header: 'Cheques in transit', width: '150px', render: (v) => v > 0 ? <span style={{ color: 'var(--info-text)', fontWeight: 600 }}>{inrPaise(v)}</span> : '—' },
+    { key: 'budgetDisbursed', header: 'Spent (cleared)', width: '140px', render: (v) => <span style={{ color: 'var(--success-text)' }}>{inr(v)}</span> },
     { key: 'avail', header: 'Available', width: '140px', render: (_, r) => { const a = r.budgetAllocated - r.budgetCommitted - r.budgetDisbursed; return <strong style={{ color: a < 0 ? 'var(--danger-text)' : undefined }}>{inr(a)}</strong>; } },
     { key: 'util', header: 'Used + committed', width: '160px', render: (_, r) => {
       const p = pct(r.budgetCommitted + r.budgetDisbursed, r.budgetAllocated);
@@ -20,7 +21,7 @@ export function FinanceBudget() {
   ];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-      <PageHeader title="Department budgets" subtitle="Committed = approved claims awaiting transfer. The server blocks approvals that would exceed the allocation. Allocations are set by the Super Admin." />
+      <PageHeader title="Department budgets" subtitle={`As of ${state.budgetAsOf ? new Date(state.budgetAsOf).toLocaleString('en-IN') : 'now'}. Committed = approved claims not yet paid. Cheques in transit are issued but not cleared, so they are not spent yet. The server blocks approvals that would exceed the allocation. Allocations are set by the Super Admin.`} />
       {state.departments.length === 0 ? <EmptyState title="No departments yet">The Super Admin creates departments and their budgets.</EmptyState>
         : <div className="card"><DataTable columns={columns} data={state.departments} searchable={false} /></div>}
     </div>

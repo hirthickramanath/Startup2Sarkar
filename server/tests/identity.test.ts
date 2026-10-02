@@ -3,10 +3,24 @@ import assert from 'node:assert';
 import { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app';
 import { getDatabase, DatabaseAdapter } from '../src/db';
-import { hashPassword } from '../src/security';
+import crypto from 'crypto';
+import { hashPassword, _resetGoogleJwksCache } from '../src/security';
+import { DevelopmentEmailProvider, BrevoEmailProvider } from '../src/adapters';
 
 process.env.AUTH_RATE_MAX = '1000';
 process.env.RATE_LIMIT_MAX = '5000';
+
+const b64u = (b: Buffer | string) => Buffer.from(b).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+const GKEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+const GJWK = { ...GKEY.publicKey.export({ format: 'jwk' }), kid: 'id-key', alg: 'RS256', use: 'sig' };
+const GCLIENT = 'id-client.apps.googleusercontent.com';
+/** A signed Google ID token for a pretend Google account. */
+const gtoken = (sub: string, email: string, name = 'Person') => {
+  const now = Math.floor(Date.now() / 1000);
+  const head = b64u(JSON.stringify({ alg: 'RS256', kid: 'id-key', typ: 'JWT' }));
+  const body = b64u(JSON.stringify({ iss: 'https://accounts.google.com', aud: GCLIENT, sub, email, email_verified: true, name, iat: now, exp: now + 3600 }));
+  return `${head}.${body}.${b64u(crypto.sign('RSA-SHA256', Buffer.from(`${head}.${body}`), GKEY.privateKey))}`;
+};
 
 /** A pretend GitHub: token exchange + profile + emails, switchable per test. */
 function fakeGithub(user: { id: number; login: string; name?: string; emails: Array<{ email: string; primary?: boolean; verified: boolean }>; denyToken?: boolean }) {
@@ -26,6 +40,7 @@ describe('Identity: sign-in methods, onboarding, approvals and the investor wall
   let app: FastifyInstance;
   let db: DatabaseAdapter;
   let gh = fakeGithub({ id: 1, login: 'x', emails: [] });
+  const mail = new DevelopmentEmailProvider();
   let adminToken = '';
   const PW = 'Adm1n#Passw0rd!';
 
@@ -54,19 +69,30 @@ describe('Identity: sign-in methods, onboarding, approvals and the investor wall
     });
   }
 
+  const googleStart = async (sub: string, email: string, name = 'Person') => {
+    const res = await app.inject({ method: 'POST', url: '/api/v1/auth/google', payload: { credential: gtoken(sub, email, name) } });
+    assert.strictEqual(res.statusCode, 200, res.body);
+    return res;
+  };
+  const googleSignup = async (sub: string, email: string, name = 'Person') => {
+    const res = await googleStart(sub, email, name);
+    assert.strictEqual(J(res).needsOnboarding, true, `first sign-in for ${email} must start onboarding`);
+    return cookiesOf(res).s2s_signup as string;
+  };
   const onboard = (signup: string, payload: any) => app.inject({ method: 'POST', url: '/api/v1/auth/onboarding', cookies: { s2s_signup: signup }, payload });
   const base = { phone: '9876543210', acceptTerms: true };
 
   before(async () => {
     process.env.GITHUB_CLIENT_ID = 'cid';
     process.env.GITHUB_CLIENT_SECRET = 'csecret';
+    process.env.GOOGLE_CLIENT_ID = GCLIENT; _resetGoogleJwksCache();
     db = getDatabase();
-    app = await buildApp({ db, githubFetch: ((u: any, i: any) => (gh.impl as any)(u, i)) as any });
+    app = await buildApp({ db, emailProvider: mail, jwksFetcher: async () => ({ keys: [GJWK] }), githubFetch: ((u: any, i: any) => (gh.impl as any)(u, i)) as any });
     await db.query(`INSERT INTO departments (id, name, code, ministry, budget_allocated_paise) VALUES ('DEPT-ID','Dept Identity','ID','Min ID',0) ON CONFLICT (id) DO NOTHING`);
     await db.query(`INSERT INTO users (id, email, password_hash, role, name, designation) VALUES ('USR-ADM-ID','admin@id.test',$1,'admin','Admin','Super Admin')`, [await hashPassword(PW)]);
     adminToken = await login('admin@id.test', 'admin');
   });
-  after(async () => { delete process.env.GITHUB_CLIENT_ID; delete process.env.GITHUB_CLIENT_SECRET; await app.close(); });
+  after(async () => { delete process.env.GITHUB_CLIENT_ID; delete process.env.GITHUB_CLIENT_SECRET; delete process.env.GOOGLE_CLIENT_ID; await app.close(); });
 
   describe('GitHub sign-in', () => {
     it('is switched off cleanly when GitHub is not configured', async () => {
@@ -131,13 +157,38 @@ describe('Identity: sign-in methods, onboarding, approvals and the investor wall
     });
   });
 
-  describe('Onboarding for every role', () => {
-    const newSignup = async (sub: string, email: string, name = 'Person') => {
-      gh = fakeGithub({ id: Number(sub), login: `u${sub}`, name, emails: [{ email, primary: true, verified: true }] });
+  describe('GitHub is for startups only', () => {
+    it('GitHub cannot be used to sign up as an investor or as staff', async () => {
+      gh = fakeGithub({ id: 601, login: 'wants-staff', name: 'Wants Staff', emails: [{ email: 'wants.staff@example.com', primary: true, verified: true }] });
       const cb = await githubCallback();
-      assert.strictEqual(cb.headers.location, '/signup', `signup for ${email}`);
-      return cookiesOf(cb).s2s_signup;
-    };
+      assert.strictEqual(cb.headers.location, '/signup');
+      const signup = cookiesOf(cb).s2s_signup;
+      const prefill = J(await app.inject({ method: 'GET', url: '/api/v1/auth/onboarding', cookies: { s2s_signup: signup } }));
+      assert.strictEqual(prefill.provider, 'github');
+      for (const payload of [
+        { ...base, role: 'investor', name: 'W S', investorType: 'ANGEL', organisation: 'Angel Co' },
+        { ...base, role: 'government', name: 'W S', departmentId: 'DEPT-ID', designation: 'Officer', officialEmail: 'w@dept.gov.in', reason: 'I need access to run procurement.' }
+      ]) {
+        const r = await onboard(signup, payload);
+        assert.strictEqual(r.statusCode, 400); assert.strictEqual(J(r).code, 'GITHUB_STARTUP_ONLY');
+      }
+      assert.strictEqual(Number((await db.query(`SELECT COUNT(*) c FROM users WHERE email = 'wants.staff@example.com'`)).rows[0].c), 0);
+    });
+
+    it('an existing staff or investor account cannot sign in or auto-link through GitHub, even with a verified matching email', async () => {
+      await db.query(`INSERT INTO users (id, email, password_hash, role, name, designation, department_id) VALUES ('USR-STAFF-GH','staff.gh@example.com',$1,'finance','Staff','Officer','DEPT-ID')`, [await hashPassword(PW)]);
+      gh = fakeGithub({ id: 602, login: 'staff-gh', emails: [{ email: 'staff.gh@example.com', primary: true, verified: true }] });
+      assert.strictEqual((await githubCallback()).headers.location, '/login?error=github_startup_only');
+      assert.strictEqual(Number((await db.query(`SELECT COUNT(*) c FROM auth_identities WHERE user_id = 'USR-STAFF-GH'`)).rows[0].c), 0);
+      const staffToken = await login('staff.gh@example.com', 'finance');
+      const link = await app.inject({ method: 'POST', url: '/api/v1/auth/github/link-url', headers: bearer(staffToken) });
+      assert.strictEqual(link.statusCode, 403); assert.strictEqual(J(link).code, 'GITHUB_STARTUP_ONLY');
+      assert.strictEqual(J(await app.inject({ method: 'GET', url: '/api/v1/auth/identities', headers: bearer(staffToken) })).githubAvailable, false);
+    });
+  });
+
+  describe('Onboarding for every role', () => {
+    const newSignup = (sub: string, email: string, name = 'Person') => googleSignup(`g${sub}`, email, name);
 
     it('validates answers (terms, DPIIT format, duplicates, unknown department)', async () => {
       const s = await newSignup('201', 'v1@example.com');
@@ -180,12 +231,11 @@ describe('Identity: sign-in methods, onboarding, approvals and the investor wall
       const u = (await db.query(`SELECT role, status, department_id FROM users WHERE email = 'officer@example.com'`)).rows[0];
       assert.deepStrictEqual({ role: u.role, status: u.status, dept: u.department_id }, { role: 'government', status: 'ACTIVE', dept: 'DEPT-ID' });
       // an approved person signs in again and now reaches their workspace
-      gh = fakeGithub({ id: 202, login: 'u202', name: 'Officer One', emails: [{ email: 'officer@example.com', primary: true, verified: true }] });
-      const cb = await githubCallback();
-      assert.strictEqual(cb.headers.location, '/');
-      const me = J(await app.inject({ method: 'GET', url: '/api/v1/auth/me', cookies: { s2s_session: cookiesOf(cb).s2s_session } }));
+      const back = J(await googleStart('g202', 'officer@example.com', 'Officer One'));
+      assert.strictEqual(back.success, true);
+      const me = J(await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(back.token) }));
       assert.strictEqual(me.user.role, 'government');
-      assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/challenges', cookies: { s2s_session: cookiesOf(cb).s2s_session } })).statusCode, 200);
+      assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/challenges', headers: bearer(back.token) })).statusCode, 200);
     });
 
     it('a rejected request stays locked out and records the reason', async () => {
@@ -212,8 +262,7 @@ describe('Identity: sign-in methods, onboarding, approvals and the investor wall
     const SECRET_MSG = 'We would like to discuss a seed round of one crore for your robotics work.';
 
     it('an investor signs up instantly but sees no startups until an administrator verifies them', async () => {
-      gh = fakeGithub({ id: 301, login: 'vc-person', name: 'Vee Cee', emails: [{ email: 'vc@fund.test', primary: true, verified: true }] });
-      const signup = cookiesOf(await githubCallback()).s2s_signup;
+      const signup = await googleSignup('g301', 'vc@fund.test', 'Vee Cee');
       const done = await onboard(signup, { ...base, role: 'investor', name: 'Vee Cee', investorType: 'VENTURE_CAPITAL', organisation: 'Fund One', website: 'https://fund.test', sectors: ['Robotics'] });
       assert.strictEqual(done.statusCode, 201, done.body);
       assert.strictEqual(J(done).user.status, 'ACTIVE');
@@ -358,5 +407,68 @@ describe('Identity: sign-in methods, onboarding, approvals and the investor wall
       assert.strictEqual(org.verification_status, 'PENDING');
       assert.strictEqual((await app.inject({ method: 'PUT', url: '/api/v1/auth/organization', headers: bearer(adminToken), payload: {} })).statusCode, 403);
     });
+
+  describe('Email: forgot password and decision emails', () => {
+    const sent = () => mail.getSentEmails();
+    const tokenFrom = (to: string) => { const m = [...sent()].reverse().find((e) => e.to === to); assert.ok(m, `an email to ${to}`); const t = /token=([0-9a-f]{64})/.exec(m!.text); assert.ok(t, 'the email contains a reset link'); return t![1]; };
+    before(async () => { await db.query(`INSERT INTO users (id, email, password_hash, role, name, designation) VALUES ('USR-RESET','reset@example.com',$1,'startup','Reset Person','Founder')`, [await hashPassword(PW)]); });
+    const forgot = (email: string) => app.inject({ method: 'POST', url: '/api/v1/auth/forgot-password', payload: { email } });
+    const reset = (token: string, password: string) => app.inject({ method: 'POST', url: '/api/v1/auth/reset-password', payload: { token, password } });
+
+    it('answers the same way whether or not the email has an account, and sends nothing for strangers', async () => {
+      const before = sent().length;
+      const stranger = await forgot('nobody@example.com');
+      assert.strictEqual(stranger.statusCode, 200);
+      const known = await forgot('reset@example.com');
+      assert.deepStrictEqual(J(stranger), J(known), 'no way to tell the two apart');
+      assert.strictEqual(sent().length, before + 1, 'only the real account got an email');
+    });
+
+    it('stores only a hash of the token, and a weak password or a made-up token is refused', async () => {
+      const token = tokenFrom('reset@example.com');
+      const rows = (await db.query('SELECT token_hash FROM password_resets')).rows;
+      assert.ok(rows.length >= 1 && rows.every((r: any) => r.token_hash !== token), 'the token itself is never stored');
+      const weak = await reset(token, 'password');
+      assert.strictEqual(weak.statusCode, 400); assert.strictEqual(J(weak).code, 'WEAK_PASSWORD');
+      assert.strictEqual(J(await reset('f'.repeat(64), 'N3w#StrongPass!')).code, 'RESET_INVALID');
+    });
+
+    it('a valid link sets the new password, ends every existing sign-in, and works only once', async () => {
+      const oldSession = await login('reset@example.com', 'startup');
+      assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(oldSession) })).statusCode, 200);
+      const token = tokenFrom('reset@example.com');
+      assert.strictEqual((await reset(token, 'N3w#StrongPass!')).statusCode, 200);
+      assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(oldSession) })).statusCode, 401, 'old sessions are gone');
+      assert.strictEqual((await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: 'reset@example.com', password: PW, role: 'startup' } })).statusCode, 401, 'old password no longer works');
+      assert.strictEqual((await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: 'reset@example.com', password: 'N3w#StrongPass!', role: 'startup' } })).statusCode, 200);
+      assert.strictEqual(J(await reset(token, 'An0ther#StrongPass!')).code, 'RESET_INVALID', 'the link cannot be used twice');
+    });
+
+    it('a link expires after 30 minutes', async () => {
+      await forgot('reset@example.com');
+      const token = tokenFrom('reset@example.com');
+      await db.query(`UPDATE password_resets SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 minute'`);
+      assert.strictEqual(J(await reset(token, 'N3w#StrongPass2!')).code, 'RESET_INVALID');
+    });
+
+    it('people are emailed when an administrator decides on their access', async () => {
+      const m = sent().find((e) => e.to === 'officer@example.com' && /approved/i.test(e.subject));
+      assert.ok(m, 'the approved officer received an email');
+      const rej = sent().find((e) => e.to === 'rejected@example.com' && /not approved/i.test(e.subject));
+      assert.ok(rej && /Not an employee/.test(rej.text), 'the rejected person was told why');
+    });
+
+    it('the Brevo provider calls the right endpoint with the key in a header and surfaces failures', async () => {
+      let seen: any = null;
+      const ok = new BrevoEmailProvider('key-123', { email: 'noreply@example.com', name: 'S2S' }, (async (url: any, init: any) => { seen = { url: String(url), init }; return new Response(JSON.stringify({ messageId: '<abc>' }), { status: 201 }); }) as any);
+      const r = await ok.sendEmail({ to: 'a@b.c', subject: 'Hi', text: 'T', html: '<p>T</p>' });
+      assert.strictEqual(r.success, true); assert.strictEqual(r.messageId, '<abc>');
+      assert.strictEqual(seen.url, 'https://api.brevo.com/v3/smtp/email'); assert.strictEqual(seen.init.headers['api-key'], 'key-123');
+      const body = JSON.parse(seen.init.body);
+      assert.deepStrictEqual([body.sender.email, body.to[0].email, body.subject, body.textContent], ['noreply@example.com', 'a@b.c', 'Hi', 'T']);
+      const bad = new BrevoEmailProvider('k', { email: 'x@y.z', name: 'S' }, (async () => new Response('{}', { status: 401 })) as any);
+      await assert.rejects(() => bad.sendEmail({ to: 'a@b.c', subject: 's', text: 't', html: 't' }), /rejected/);
+    });
+  });
   });
 });

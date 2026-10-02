@@ -301,6 +301,18 @@ export async function proposalRoutes(
   });
 
   // 4. Human Startup Selection for Pilot Execution (Spec Section 12)
+  // A startup can withdraw its own proposal until it is selected
+  app.post('/:id/withdraw', { preHandler: [authenticate, requireRole('startup')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const authReq = request as AuthenticatedRequest;
+    const p = (await db.query('SELECT id, status, organization_id FROM proposals WHERE id = $1', [id])).rows[0];
+    if (!p || p.organization_id !== authReq.user.organizationId) return reply.status(404).send({ error: 'Proposal not found' });
+    if (!['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'AI_EVALUATED', 'SHORTLISTED', 'NOT_SHORTLISTED'].includes(p.status)) return reply.status(409).send({ error: `A proposal in status '${p.status}' cannot be withdrawn.` });
+    await db.query(`UPDATE proposals SET status = 'WITHDRAWN', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'startup', action: 'PROPOSAL_WITHDRAWN', entityType: 'PROPOSAL', entityId: id, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true });
+  });
+
   app.post('/:id/select', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const { remarks } = request.body as { remarks: string };
@@ -326,7 +338,7 @@ export async function proposalRoutes(
     if (authReq.user.role === 'government' && authReq.user.departmentId && proposal.department_id !== authReq.user.departmentId) {
       return reply.status(403).send({ error: 'Forbidden: this proposal belongs to another department' });
     }
-    if (['SELECTED', 'REJECTED', 'DRAFT'].includes(proposal.status)) {
+    if (['SELECTED', 'REJECTED', 'DRAFT', 'WITHDRAWN'].includes(proposal.status)) {
       return reply.status(409).send({ error: `A proposal in status '${proposal.status}' cannot be selected.` });
     }
     const alreadyPilot = await db.query(`SELECT id FROM pilots WHERE challenge_id = $1 AND status <> 'TERMINATED'`, [proposal.challenge_id]);

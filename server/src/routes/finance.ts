@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { DatabaseAdapter } from '../db';
+import { DatabaseAdapter, getSetting } from '../db';
 import { computeDeductions, loadTaxSettings } from '../tax';
 import { AuditService } from '../audit';
 import { TreasuryProvider } from '../adapters';
@@ -20,6 +20,21 @@ const approveClaimSchema = z.object({
   remarks: z.string().min(5)
 });
 
+const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use the format YYYY-MM-DD');
+const chequeSchema = z.object({
+  chequeNumber: z.string().trim().regex(/^[0-9]{6,10}$/, 'A cheque number is 6 to 10 digits'),
+  chequeDate: isoDay,
+  draweeBank: z.string().trim().min(3).max(80),
+  signatories: z.string().trim().min(3).max(200)
+});
+const clearSchema = z.object({ clearedDate: isoDay });
+const bounceSchema = z.object({ reason: z.string().trim().min(5).max(300) });
+const remitSchema = z.object({ challanNumber: z.string().trim().regex(/^[A-Za-z0-9\-\/]{6,30}$/, 'Challan numbers are 6-30 letters, digits, - or /'), challanDate: isoDay });
+
+/** Claims at or above this gross amount need two different finance officers, and a third person to record the payment. */
+export const DUAL_APPROVAL_KEY = 'payments.dual_approval_threshold_paise';
+export const DEFAULT_DUAL_APPROVAL_PAISE = '500000000'; // ₹50,00,000
+
 const disburseClaimSchema = z.object({
   disbursementReference: z.string().min(8) // Mandatory Bank Reference / UTR number!
 });
@@ -35,6 +50,37 @@ export async function financeRoutes(
 ) {
   const { db, auditService, treasuryProvider, aiProvider } = opts;
   const authenticate = createAuthMiddleware(db);
+  const meta = (request: FastifyRequest) => ({ ipAddress: request.ip || '127.0.0.1', userAgent: (request.headers['user-agent'] as string) || 'Unknown' });
+  const dualThreshold = async () => BigInt(String(await getSetting<string | number>(db, DUAL_APPROVAL_KEY, DEFAULT_DUAL_APPROVAL_PAISE)));
+  const needsTwoPeople = async (claim: any) => BigInt(claim.gross_amount_paise) >= (await dualThreshold());
+  const taxId = (claimId: string, t: string) => `TAX-${claimId}-${t === 'TDS' ? 'TDS' : 'GST'}`;
+
+  /** The ONE place a claim becomes PAID (electronic transfer recorded, or cheque cleared): ledger, milestone, tax. */
+  async function markPaid(tx: DatabaseAdapter, claim: any, reference: string, paidAt: string | Date, userId: string, method: 'ELECTRONIC' | 'CHEQUE') {
+    await tx.query(
+      `UPDATE finance_payment_claims SET status = 'PAID', payment_method = $1, disbursement_reference = $2, disbursed_at = $3, disbursed_by_user_id = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5`,
+      [method, reference, paidAt, userId, claim.id]
+    );
+    await tx.query(`UPDATE pilot_milestones SET status = 'PAID', paid_at = $1 WHERE id = $2`, [paidAt, claim.milestone_id]);
+    await tx.query(
+      `UPDATE departments SET budget_committed_paise = budget_committed_paise - $1, budget_disbursed_paise = budget_disbursed_paise + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      [claim.gross_amount_paise, claim.department_id]
+    );
+    for (const [type, amount] of [['TDS', claim.tds_paise], ['GST_TDS', claim.gst_paise]] as const) {
+      if (BigInt(amount) > 0n) {
+        await tx.query(
+          `INSERT INTO tax_remittances (id, claim_id, department_id, tax_type, amount_paise, deducted_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+          [taxId(claim.id, type), claim.id, claim.department_id, type, String(amount), paidAt]
+        );
+      }
+    }
+  }
+
+  const notifyStartup = (orgId: string, title: string, message: string) => db.query(
+    `INSERT INTO notifications (id, user_id, title, message, priority, action_link)
+     SELECT 'NTF-' || $1::text || '-' || u.id, u.id, $2::text, $3::text, 'INFO', '/startup/payments' FROM users u WHERE u.organization_id = $4`,
+    [`${Date.now()}${Math.floor(Math.random() * 1000)}`, title, message, orgId]
+  );
 
   // 1. Finance Treasury Dashboard Overview (Integer Paise, Spec Section 46)
   app.get('/dashboard', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -87,12 +133,13 @@ export async function financeRoutes(
              CASE
                WHEN budget_allocated_paise = 0 THEN 0
                ELSE ROUND((budget_committed_paise::numeric / budget_allocated_paise::numeric) * 100, 1)
-             END as utilization_percent
+             END as utilization_percent,
+             (SELECT COALESCE(SUM(c.net_payable_paise), 0) FROM finance_payment_claims c WHERE c.department_id = departments.id AND c.status = 'CHEQUE_ISSUED') AS cheques_in_transit_paise
       FROM departments
       ORDER BY name ASC
     `);
 
-    return reply.send({ departments: res.rows });
+    return reply.send({ departments: res.rows, asOf: new Date().toISOString() });
   });
 
   // 3. Payment Claims List
@@ -101,7 +148,7 @@ export async function financeRoutes(
     const query = request.query as any;
 
     let sql = `
-      SELECT fpc.*,
+      SELECT fpc.*, to_char(fpc.cheque_date, 'YYYY-MM-DD') AS cheque_day,
              p.name as pilot_name, pm.title as milestone_title,
              o.name as startup_name, d.name as department_name
       FROM finance_payment_claims fpc
@@ -279,7 +326,7 @@ export async function financeRoutes(
     }
     const claim = claimRes.rows[0];
 
-    if (!['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'FINANCE_REVIEW'].includes(claim.status)) {
+    if (!['SUBMITTED', 'UNDER_REVIEW', 'VERIFICATION_PENDING', 'FINANCE_REVIEW', 'AWAITING_SECOND_APPROVAL'].includes(claim.status)) {
       return reply.status(409).send({ error: `A claim in status '${claim.status}' cannot be approved.`, code: 'INVALID_CLAIM_STATE' });
     }
     if (!remarks || remarks.trim().length < 5) {
@@ -323,6 +370,17 @@ export async function financeRoutes(
         error: `Cannot approve payment: ${anomRes.rows.length} critical anomaly/anomalies pending human resolution.`,
         code: 'BLOCKING_ANOMALY_PENDING'
       });
+    }
+
+    // Two-person rule for large payments: the first approval only records; a DIFFERENT officer completes it.
+    const dual = await needsTwoPeople(claim);
+    if (claim.status === 'AWAITING_SECOND_APPROVAL' && claim.first_reviewer_user_id === authReq.user.userId) {
+      return reply.status(403).send({ error: 'Two-person rule: a different finance officer must give the second approval.', code: 'TWO_PERSON_RULE' });
+    }
+    if (dual && claim.status !== 'AWAITING_SECOND_APPROVAL') {
+      await db.query(`UPDATE finance_payment_claims SET status = 'AWAITING_SECOND_APPROVAL', first_reviewer_user_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, [authReq.user.userId, id]);
+      await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'PAYMENT_CLAIM_FIRST_APPROVAL', entityType: 'PAYMENT_CLAIM', entityId: id, details: { grossPaise: String(claim.gross_amount_paise), remarks }, ...meta(request) });
+      return reply.send({ success: true, awaitingSecondApproval: true, message: 'First approval recorded. This amount needs a second approval from a different finance officer.' });
     }
 
     await db.transaction(async (tx) => {
@@ -392,6 +450,9 @@ export async function financeRoutes(
     if (claim.status !== 'APPROVED') {
       return reply.status(400).send({ error: `Cannot disburse payment in status '${claim.status}'. Must be APPROVED first.` });
     }
+    if ((await needsTwoPeople(claim)) && [claim.approver_user_id, claim.first_reviewer_user_id].includes(authReq.user.userId)) {
+      return reply.status(403).send({ error: 'Segregation of duties: for a payment this size, someone other than the two approvers must record it.', code: 'SEGREGATION_OF_DUTIES' });
+    }
 
     // Call Treasury Provider
     const disburseResult = await treasuryProvider.recordDisbursement({
@@ -407,32 +468,7 @@ export async function financeRoutes(
       disbursedByUserId: authReq.user.userId
     });
 
-    await db.transaction(async (tx) => {
-      // 1. Mark claim as PAID
-      await tx.query(
-        `UPDATE finance_payment_claims
-         SET status = 'PAID', disbursement_reference = $1, disbursed_at = $2,
-             disbursed_by_user_id = $3, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $4`,
-        [disburseResult.referenceNumber, disburseResult.disbursedAt, authReq.user.userId, id]
-      );
-
-      // 2. Mark milestone as PAID
-      await tx.query(
-        `UPDATE pilot_milestones SET status = 'PAID', paid_at = $1 WHERE id = $2`,
-        [disburseResult.disbursedAt, claim.milestone_id]
-      );
-
-      // 3. Move funds from committed to disbursed in Department Ledger
-      await tx.query(
-        `UPDATE departments
-         SET budget_committed_paise = budget_committed_paise - $1,
-             budget_disbursed_paise = budget_disbursed_paise + $1,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2`,
-        [claim.gross_amount_paise, claim.department_id]
-      );
-    });
+    await db.transaction(async (tx) => { await markPaid(tx, claim, disburseResult.referenceNumber, disburseResult.disbursedAt, authReq.user.userId, 'ELECTRONIC'); });
 
     await auditService.logEvent({
       actorId: authReq.user.userId,
@@ -463,7 +499,7 @@ export async function financeRoutes(
     const authReq = request as AuthenticatedRequest;
 
     const claimRes = await db.query(
-      `SELECT fpc.*, p.name as pilot_name, pm.title as milestone_title,
+      `SELECT fpc.*, to_char(fpc.cheque_date, 'YYYY-MM-DD') AS cheque_day, p.name as pilot_name, pm.title as milestone_title,
               o.name as startup_name, d.name as department_name
        FROM finance_payment_claims fpc
        JOIN pilots p ON fpc.pilot_id = p.id
@@ -688,4 +724,117 @@ export async function financeRoutes(
   };
   app.post('/payments/:id/hold', { preHandler: [authenticate, requireRole('finance', 'admin')] }, holdOrReject('hold'));
   app.post('/payments/:id/reject', { preHandler: [authenticate, requireRole('finance', 'admin')] }, holdOrReject('reject'));
+  // ───────────── Cheque lifecycle: issued -> cleared (counts as spent) or bounced (back to approved) ─────────────
+  const loadForPayment = async (id: string) => (await db.query("SELECT *, to_char(cheque_date, 'YYYY-MM-DD') AS cheque_day FROM finance_payment_claims WHERE id = $1", [id])).rows[0];
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  app.post('/payments/:id/cheque', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const { id } = request.params as { id: string };
+    const parsed = chequeSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Please check the cheque details', details: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) });
+    const d = parsed.data;
+    const claim = await loadForPayment(id);
+    if (!claim) return reply.status(404).send({ error: 'Payment claim not found' });
+    if (claim.status !== 'APPROVED') return reply.status(409).send({ error: `A cheque can be recorded only for an APPROVED claim (this one is ${claim.status}).`, code: 'INVALID_CLAIM_STATE' });
+    if ((await needsTwoPeople(claim)) && [claim.approver_user_id, claim.first_reviewer_user_id].includes(authReq.user.userId)) {
+      return reply.status(403).send({ error: 'Segregation of duties: for a payment this size, someone other than the two approvers must issue the cheque.', code: 'SEGREGATION_OF_DUTIES' });
+    }
+    const gap = Math.abs(Date.parse(d.chequeDate) - Date.parse(today())) / 86400000;
+    if (Number.isNaN(gap) || gap > 90) return reply.status(400).send({ error: 'The cheque date must be within 90 days of today.' });
+    const bankKey = d.draweeBank.toLowerCase();
+    const dup = await db.query(
+      `SELECT 1 FROM finance_payment_claims WHERE (LOWER(drawee_bank) = $1 AND cheque_number = $2) OR cheque_history @> $3::jsonb LIMIT 1`,
+      [bankKey, d.chequeNumber, JSON.stringify([{ number: d.chequeNumber, bankKey }])]
+    );
+    if (dup.rows.length) return reply.status(409).send({ error: 'That cheque number has already been used for this bank.', code: 'CHEQUE_NUMBER_USED' });
+
+    const entry = { event: 'ISSUED', number: d.chequeNumber, bank: d.draweeBank, bankKey, date: d.chequeDate, at: new Date().toISOString(), by: authReq.user.userId };
+    await db.query(
+      `UPDATE finance_payment_claims SET status = 'CHEQUE_ISSUED', payment_method = 'CHEQUE', cheque_number = $1, cheque_date = $2, drawee_bank = $3, cheque_signatories = $4,
+         cheque_issued_at = CURRENT_TIMESTAMP, cheque_issued_by_user_id = $5, cheque_history = cheque_history || $6::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $7`,
+      [d.chequeNumber, d.chequeDate, d.draweeBank, d.signatories, authReq.user.userId, JSON.stringify([entry]), id]
+    );
+    await notifyStartup(claim.organization_id, 'Cheque issued', `A cheque (no. ${d.chequeNumber}, ${d.draweeBank}) was issued for your claim ${claim.invoice_number}. It counts as paid once it clears.`);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'CHEQUE_ISSUED', entityType: 'PAYMENT_CLAIM', entityId: id, details: { chequeNumber: d.chequeNumber, draweeBank: d.draweeBank, netPayablePaise: String(claim.net_payable_paise) }, ...meta(request) });
+    return reply.send({ success: true });
+  });
+
+  app.post('/payments/:id/cheque/clear', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const { id } = request.params as { id: string };
+    const parsed = clearSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Enter the date the cheque cleared (YYYY-MM-DD)' });
+    const claim = await loadForPayment(id);
+    if (!claim) return reply.status(404).send({ error: 'Payment claim not found' });
+    if (claim.status !== 'CHEQUE_ISSUED') return reply.status(409).send({ error: 'Only a claim with an issued cheque can be marked as cleared.', code: 'INVALID_CLAIM_STATE' });
+    if (parsed.data.clearedDate > today()) return reply.status(400).send({ error: 'A cheque cannot clear in the future.' });
+    if (claim.cheque_day && parsed.data.clearedDate < claim.cheque_day) return reply.status(400).send({ error: 'The clearing date cannot be before the cheque date.' });
+    const entry = { event: 'CLEARED', number: claim.cheque_number, bank: claim.drawee_bank, bankKey: String(claim.drawee_bank).toLowerCase(), date: parsed.data.clearedDate, at: new Date().toISOString(), by: authReq.user.userId };
+    await db.transaction(async (tx) => {
+      await markPaid(tx, claim, `CHQ-${claim.cheque_number}`, `${parsed.data.clearedDate}T12:00:00Z`, authReq.user.userId, 'CHEQUE');
+      await tx.query(`UPDATE finance_payment_claims SET cheque_history = cheque_history || $1::jsonb WHERE id = $2`, [JSON.stringify([entry]), id]);
+    });
+    await notifyStartup(claim.organization_id, 'Payment cleared', `Your cheque for claim ${claim.invoice_number} has cleared.`);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'CHEQUE_CLEARED', entityType: 'PAYMENT_CLAIM', entityId: id, details: { chequeNumber: claim.cheque_number, clearedDate: parsed.data.clearedDate, netPayablePaise: String(claim.net_payable_paise) }, ...meta(request) });
+    return reply.send({ success: true });
+  });
+
+  app.post('/payments/:id/cheque/bounce', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const { id } = request.params as { id: string };
+    const parsed = bounceSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Give the reason the cheque was returned (at least 5 characters)' });
+    const claim = await loadForPayment(id);
+    if (!claim) return reply.status(404).send({ error: 'Payment claim not found' });
+    if (claim.status !== 'CHEQUE_ISSUED') return reply.status(409).send({ error: 'Only an issued cheque can be marked as returned.', code: 'INVALID_CLAIM_STATE' });
+    const entry = { event: 'BOUNCED', number: claim.cheque_number, bank: claim.drawee_bank, bankKey: String(claim.drawee_bank).toLowerCase(), reason: parsed.data.reason, at: new Date().toISOString(), by: authReq.user.userId };
+    // Money stays reserved; the claim goes back to APPROVED so a new cheque or an electronic payment can be recorded.
+    await db.query(
+      `UPDATE finance_payment_claims SET status = 'APPROVED', payment_method = NULL, cheque_number = NULL, cheque_date = NULL, drawee_bank = NULL, cheque_signatories = NULL,
+         cheque_history = cheque_history || $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, [JSON.stringify([entry]), id]);
+    await notifyStartup(claim.organization_id, 'Cheque returned', `The cheque for claim ${claim.invoice_number} was returned. Finance will issue a new payment.`);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'CHEQUE_BOUNCED', entityType: 'PAYMENT_CLAIM', entityId: id, details: { chequeNumber: claim.cheque_number, reason: parsed.data.reason }, ...meta(request) });
+    return reply.send({ success: true });
+  });
+
+  // ───────────── Tax ledger: deducted -> remitted ─────────────
+  app.get('/tax-ledger', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const status = String((request.query as any).status || 'ALL').toUpperCase();
+    const where = ['DEDUCTED', 'REMITTED'].includes(status) ? 'WHERE t.status = $1' : '';
+    const rows = (await db.query(
+      `SELECT t.id, t.claim_id, t.tax_type, t.amount_paise, t.status, to_char(t.deducted_at, 'YYYY-MM-DD') AS deducted_day, t.challan_number, to_char(t.challan_date, 'YYYY-MM-DD') AS challan_day,
+              c.invoice_number, o.name AS startup_name, d.name AS department_name
+       FROM tax_remittances t JOIN finance_payment_claims c ON c.id = t.claim_id JOIN organizations o ON o.id = c.organization_id JOIN departments d ON d.id = t.department_id
+       ${where} ORDER BY t.deducted_at DESC LIMIT 500`, where ? [status] : []
+    )).rows;
+    const sum = (st: string) => rows.filter((r: any) => r.status === st).reduce((a: bigint, r: any) => a + BigInt(r.amount_paise), 0n).toString();
+    return reply.send({ entries: rows, totals: { deductedPaise: sum('DEDUCTED'), remittedPaise: sum('REMITTED') } });
+  });
+
+  app.post('/tax-ledger/:id/remit', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = remitSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Please check the challan details', details: parsed.error.issues.map((i) => i.message) });
+    const row = (await db.query('SELECT * FROM tax_remittances WHERE id = $1', [(request.params as any).id])).rows[0];
+    if (!row) return reply.status(404).send({ error: 'Ledger entry not found' });
+    if (row.status === 'REMITTED') return reply.status(409).send({ error: 'This amount is already marked as remitted.' });
+    if (parsed.data.challanDate > today()) return reply.status(400).send({ error: 'The challan date cannot be in the future.' });
+    await db.query(`UPDATE tax_remittances SET status = 'REMITTED', challan_number = $1, challan_date = $2, remitted_by_user_id = $3, remitted_at = CURRENT_TIMESTAMP WHERE id = $4`, [parsed.data.challanNumber, parsed.data.challanDate, authReq.user.userId, row.id]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'TAX_REMITTED', entityType: 'PAYMENT_CLAIM', entityId: row.claim_id, details: { taxType: row.tax_type, amountPaise: String(row.amount_paise), challan: parsed.data.challanNumber }, ...meta(request) });
+    return reply.send({ success: true });
+  });
+
+  app.get('/reports/tax-ledger.csv', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (_request: FastifyRequest, reply: FastifyReply) => {
+    const rows = (await db.query(
+      `SELECT t.tax_type, t.amount_paise, t.status, to_char(t.deducted_at, 'YYYY-MM-DD') AS deducted_day, t.challan_number, to_char(t.challan_date, 'YYYY-MM-DD') AS challan_day, c.invoice_number, o.name AS startup_name, d.name AS department_name
+       FROM tax_remittances t JOIN finance_payment_claims c ON c.id = t.claim_id JOIN organizations o ON o.id = c.organization_id JOIN departments d ON d.id = t.department_id ORDER BY t.deducted_at`
+    )).rows;
+    const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""').replace(/^([=+\-@])/, "'$1")}"`;
+    const rupees = (p: any) => (Number(BigInt(p)) / 100).toFixed(2);
+    const lines = [['Department', 'Startup', 'Invoice', 'Tax', 'Amount (INR)', 'Status', 'Deducted on', 'Challan no.', 'Challan date'].join(',')];
+    for (const r of rows) lines.push([r.department_name, r.startup_name, r.invoice_number, r.tax_type === 'TDS' ? 'TDS' : 'GST-TDS', rupees(r.amount_paise), r.status, r.deducted_day, r.challan_number, r.challan_day || ''].map(esc).join(','));
+    reply.header('Content-Type', 'text/csv; charset=utf-8').header('Content-Disposition', 'attachment; filename="tax-ledger.csv"');
+    return reply.send(lines.join('\n'));
+  });
 }

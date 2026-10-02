@@ -13,7 +13,11 @@ export function StatusBadge({ status, size = 'md' }) {
   let type = 'neutral';
   let Icon = FileText;
 
-  if (
+  if (normalized.includes('awaiting second') || normalized.includes('bounced')) {
+    type = 'warning';
+  } else if (normalized.includes('cheque issued')) {
+    type = 'info';
+  } else if (
     normalized.includes('verified') || 
     normalized.includes('achieved') || 
     normalized.includes('approved') || 

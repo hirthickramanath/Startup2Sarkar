@@ -388,6 +388,37 @@ export async function pilotRoutes(app: FastifyInstance, opts: { db: DatabaseAdap
   });
 
   // 9. Assign / reassign the field inspector
+  // Extend or terminate a pilot (government of the owning department, or an administrator)
+  app.post('/:id/extend', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ months: z.number().int().min(1).max(12), reason: z.string().trim().min(10).max(500) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Choose 1 to 12 extra months and give a reason of at least 10 characters.' });
+    const access = await getAuthorizedPilot(db, authReq.user, id, 'gov-write');
+    if (!('pilot' in access)) return reply.status(access.status).send({ error: access.error });
+    if (!['LAUNCHED', 'IN_PROGRESS', 'UNDER_INSPECTION', 'STALLED'].includes(access.pilot.status)) return reply.status(409).send({ error: `A pilot in status '${access.pilot.status}' cannot be extended.` });
+    await db.query('UPDATE pilots SET duration_months = COALESCE(duration_months, 0) + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [parsed.data.months, id]);
+    await db.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) SELECT 'NTF-' || $1::text || '-' || u.id, u.id, 'Pilot extended', $2::text, 'INFO', '/startup/pilots' FROM users u WHERE u.organization_id = $3`, [`${Date.now()}`, `Your pilot was extended by ${parsed.data.months} month(s): ${parsed.data.reason}`, access.pilot.organization_id]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'PILOT_EXTENDED', entityType: 'PILOT', entityId: id, details: { months: parsed.data.months, reason: parsed.data.reason }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true });
+  });
+
+  app.post('/:id/terminate', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ reason: z.string().trim().min(10).max(500) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'A written reason of at least 10 characters is required to terminate a pilot.' });
+    const access = await getAuthorizedPilot(db, authReq.user, id, 'gov-write');
+    if (!('pilot' in access)) return reply.status(access.status).send({ error: access.error });
+    if (['COMPLETED', 'VALIDATED', 'FINANCE_PENDING', 'TERMINATED'].includes(access.pilot.status)) return reply.status(409).send({ error: `A pilot in status '${access.pilot.status}' cannot be terminated.` });
+    const inFlight = await db.query(`SELECT 1 FROM finance_payment_claims WHERE pilot_id = $1 AND status IN ('AWAITING_SECOND_APPROVAL','APPROVED','CHEQUE_ISSUED','PROCESSING') LIMIT 1`, [id]);
+    if (inFlight.rows.length) return reply.status(409).send({ error: 'Money is already committed on this pilot. Finance must pay, hold or reject those claims first.', code: 'PAYMENTS_IN_FLIGHT' });
+    await db.query(`UPDATE pilots SET status = 'TERMINATED', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) SELECT 'NTF-' || $1::text || '-' || u.id, u.id, 'Pilot terminated', $2::text, 'WARNING', '/startup/pilots' FROM users u WHERE u.organization_id = $3`, [`${Date.now()}`, `Your pilot was terminated: ${parsed.data.reason}`, access.pilot.organization_id]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'PILOT_TERMINATED', entityType: 'PILOT', entityId: id, details: { reason: parsed.data.reason }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true });
+  });
+
   app.post('/:id/assign-inspector', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const authReq = request as AuthenticatedRequest;

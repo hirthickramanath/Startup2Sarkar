@@ -5,6 +5,7 @@ import {
   FileText, Sparkles, CheckCircle2, AlertTriangle, Printer, Layers 
 } from 'lucide-react';
 import { StatusBadge } from '../../common/ui';
+import { ChallengeActions } from '../../common/Management';
 
 export function ChallengeDetail({ challengeId }) {
   const { state, navigate, evaluateProposalsAI, closeChallenge } = useApp();
@@ -241,6 +242,7 @@ export function ChallengeDetail({ challengeId }) {
           </div>
         </div>
       </div>
+      <ChallengeActions challenge={challenge} />
     </div>
   );
 }

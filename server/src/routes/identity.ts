@@ -3,10 +3,11 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { DatabaseAdapter } from '../db';
 import { AuditService } from '../audit';
+import { EmailProvider } from '../adapters';
 import {
   AuthenticatedRequest, JwksFetcher, RoleName, createAuthMiddleware, encryptField, hashPassword, isValidCinOrLlpin,
   isValidDpiitNumber, isValidGstin, isValidIfsc, isValidPan, maskBankAccount, maskPan, signBlob, signToken,
-  verifyBlob, verifyGoogleIdToken
+  validatePasswordStrength, verifyBlob, verifyGoogleIdToken
 } from '../security';
 
 /**
@@ -26,6 +27,7 @@ export interface IdentityOptions {
   jwksFetcher?: JwksFetcher;
   /** Test hook: replace the network client used to talk to GitHub */
   githubFetch?: typeof fetch;
+  emailProvider: EmailProvider;
 }
 
 type Provider = 'google' | 'github';
@@ -131,6 +133,7 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
       // A verified email that already belongs to an account is proof of control of that address: link it.
       user = (await db.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [ident.email])).rows[0];
       if (user) {
+        if (ident.provider === 'github' && user.role !== 'startup') return { kind: 'error' as const, status: 403, code: 'GITHUB_STARTUP_ONLY', message: 'GitHub sign-in is available to startups only. Use Google or your password for this account.' };
         if (!user.is_active) return generic;
         const taken = await db.query('SELECT 1 FROM auth_identities WHERE user_id = $1 AND provider = $2', [user.id, ident.provider]);
         if (taken.rows.length > 0) return generic; // that account is already tied to a DIFFERENT provider account
@@ -142,6 +145,9 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
       }
     }
 
+    if (user && ident.provider === 'github' && user.role !== 'startup') {
+      return { kind: 'error' as const, status: 403, code: 'GITHUB_STARTUP_ONLY', message: 'GitHub sign-in is available to startups only. Use Google or your password for this account.' };
+    }
     if (user) {
       if (!user.is_active) return generic;
       if (gatewayRole && user.role !== gatewayRole) {
@@ -245,6 +251,7 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
   app.post('/github/link-url', { preHandler: [authenticate], ...AUTH_RATE }, async (request, reply) => {
     if (!githubReady()) return reply.status(503).send({ error: 'GitHub sign-in is not configured on this server', code: 'GITHUB_NOT_CONFIGURED' });
     const authReq = request as AuthenticatedRequest;
+    if (authReq.user.role !== 'startup') return reply.status(403).send({ error: 'GitHub is available to startups only.', code: 'GITHUB_STARTUP_ONLY' });
     return reply.send({ url: githubAuthorizeUrl(request, reply, 'link', authReq.user.userId) });
   });
 
@@ -300,6 +307,7 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
       if (!uid) return reply.redirect('/login?error=github_state');
       const u = (await db.query('SELECT role, status FROM users WHERE id = $1 AND is_active = TRUE', [uid])).rows[0];
       if (!u) return reply.redirect('/login?error=github_state');
+      if (u.role !== 'startup') return reply.redirect('/login?error=github_startup_only');
       const out = await linkIdentity(uid, ident, request);
       const profile = ['startup', 'investor'].includes(u.role) ? `/${u.role}/profile` : `/${u.role}/dashboard`;
       return reply.redirect(`${profile}?github=${out.status === 200 ? 'linked' : out.body.code === 'IDENTITY_IN_USE' ? 'in_use' : 'error'}`);
@@ -322,7 +330,7 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
       identities: rows.map((r: any) => ({ provider: r.provider, email: r.email, displayName: r.display_name, profileUrl: r.profile_url, linkedAt: r.created_at })),
       hasPassword: !!u?.has_password,
       canUnlink: methods > 1,
-      githubAvailable: githubReady(),
+      githubAvailable: githubReady() && authReq.user.role === 'startup',
       googleAvailable: !!process.env.GOOGLE_CLIENT_ID
     });
   });
@@ -359,6 +367,7 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
       return reply.status(400).send({ error: 'Please check the highlighted answers', details: flat });
     }
     const d = parsed.data;
+    if (s.p === 'github' && d.role !== 'startup') return reply.status(400).send({ error: 'GitHub sign-up is for startups. Use Google to register for another role.', code: 'GITHUB_STARTUP_ONLY' });
     const email = String(s.e).toLowerCase();
 
     if ((await db.query('SELECT 1 FROM users WHERE LOWER(email) = $1', [email])).rows.length > 0) {
@@ -530,5 +539,50 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
       entityType: 'ORGANIZATION', entityId: authReq.user.organizationId, details: { fields: Object.keys(d), reverify }, ...meta(request)
     });
     return reply.send({ success: true, reverificationRequired: reverify });
+  });
+  // ───────────── Forgot / reset password (needs an email provider) ─────────────
+  const sha = (t: string) => crypto.createHash('sha256').update(t).digest('hex');
+  const esc = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+
+  app.post('/forgot-password', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
+    // Always the same answer, so nobody can use this to find out who has an account.
+    const generic = { success: true, message: 'If that email belongs to an account, a reset link is on its way.' };
+    const parsed = z.object({ email: z.string().trim().email().max(200) }).safeParse(request.body);
+    if (!parsed.success) return reply.send(generic);
+    const user = (await db.query('SELECT id, name, email, role, is_active FROM users WHERE LOWER(email) = LOWER($1)', [parsed.data.email])).rows[0];
+    if (user && user.is_active) {
+      const token = crypto.randomBytes(32).toString('hex');
+      await db.query('DELETE FROM password_resets WHERE user_id = $1', [user.id]);
+      await db.query('INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES ($1, $2, $3)', [sha(token), user.id, new Date(Date.now() + 30 * 60 * 1000)]);
+      const link = `${baseUrl(request)}/reset-password?token=${token}`;
+      try {
+        await opts.emailProvider.sendEmail({
+          to: user.email,
+          subject: 'Reset your Startup2Sarkar password',
+          text: `Hello ${user.name},\n\nUse this link to choose a new password. It works once and expires in 30 minutes:\n${link}\n\nIf you did not ask for this, ignore this email; your password has not changed.`,
+          html: `<p>Hello ${esc(user.name)},</p><p>Use this link to choose a new password. It works once and expires in 30 minutes:</p><p><a href="${link}">Choose a new password</a></p><p>If you did not ask for this, ignore this email; your password has not changed.</p>`
+        });
+      } catch (e: any) { request.log.error({ err: e?.message }, 'password reset email failed'); }
+      await auditService.logEvent({ actorId: user.id, actorName: user.name, actorRole: user.role, action: 'PASSWORD_RESET_REQUESTED', entityType: 'USER', entityId: user.id, ...meta(request) });
+    }
+    return reply.send(generic);
+  });
+
+  app.post('/reset-password', AUTH_RATE, async (request, reply) => {
+    const parsed = z.object({ token: z.string().min(20).max(200), password: z.string().min(1).max(200) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'This reset link is not valid.', code: 'RESET_INVALID' });
+    const row = (await db.query('SELECT user_id FROM password_resets WHERE token_hash = $1 AND expires_at > CURRENT_TIMESTAMP', [sha(parsed.data.token)])).rows[0];
+    if (!row) return reply.status(400).send({ error: 'This reset link is invalid or has expired. Request a new one.', code: 'RESET_INVALID' });
+    const strength = validatePasswordStrength(parsed.data.password);
+    if (!strength.valid) return reply.status(400).send({ error: 'Choose a stronger password', details: strength.errors, code: 'WEAK_PASSWORD' });
+    const user = (await db.query('SELECT id, name, role FROM users WHERE id = $1', [row.user_id])).rows[0];
+    const hash = await hashPassword(parsed.data.password);
+    await db.transaction(async (tx) => {
+      await tx.query('UPDATE users SET password_hash = $1, has_password = TRUE, must_change_password = FALSE, failed_login_attempts = 0, lockout_until = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [hash, row.user_id]);
+      await tx.query('DELETE FROM sessions WHERE user_id = $1', [row.user_id]); // every existing sign-in ends
+      await tx.query('DELETE FROM password_resets WHERE user_id = $1', [row.user_id]);
+    });
+    await auditService.logEvent({ actorId: user.id, actorName: user.name, actorRole: user.role, action: 'PASSWORD_RESET_COMPLETED', entityType: 'USER', entityId: user.id, ...meta(request) });
+    return reply.send({ success: true });
   });
 }

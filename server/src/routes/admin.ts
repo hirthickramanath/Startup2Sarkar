@@ -40,6 +40,7 @@ const SETTINGS_SCHEMA = z.object({
   tdsRateBps: z.number().int().min(0).max(3000).optional(),
   gstTdsRateBps: z.number().int().min(0).max(3000).optional(),
   gstTdsThresholdPaise: z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative()]).optional(),
+  dualApprovalThresholdPaise: z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative()]).optional(),
   slaDays: z.number().int().min(1).max(90).optional(),
   assistantEnabled: z.boolean().optional(),
   proposalEvaluationAiEnabled: z.boolean().optional(),
@@ -60,6 +61,13 @@ export async function adminRoutes(
   }
 ) {
   const { db, auditService, emailProvider } = opts;
+  /** Best-effort email to a user; a failed email never fails the decision itself. */
+  const mailUser = async (userId: string, subject: string, text: string) => {
+    try {
+      const u = (await db.query('SELECT email, name FROM users WHERE id = $1', [userId])).rows[0];
+      if (u) await emailProvider.sendEmail({ to: u.email, subject, text: `Hello ${u.name},\n\n${text}\n\nStartup2Sarkar`, html: `<p>Hello ${String(u.name).replace(/[<>&]/g, '')},</p><p>${text.replace(/[<>&]/g, '')}</p><p>Startup2Sarkar</p>` });
+    } catch { /* logged by the provider; the decision stands */ }
+  };
   const authenticate = createAuthMiddleware(db);
 
   // Guard all admin routes with requireRole('admin')
@@ -390,6 +398,7 @@ export async function adminRoutes(
     tdsRateBps: await getSetting<number>(db, 'tax.tds_rate_bps', 200),
     gstTdsRateBps: await getSetting<number>(db, 'tax.gst_tds_rate_bps', 200),
     gstTdsThresholdPaise: String(await getSetting<string | number>(db, 'tax.gst_tds_threshold_paise', '25000000')),
+    dualApprovalThresholdPaise: String(await getSetting<string | number>(db, 'payments.dual_approval_threshold_paise', '500000000')),
     slaDays: await getSetting<number>(db, 'sla.payment_days', 15),
     assistantEnabled: await getSetting<boolean>(db, 'ai.assistant.enabled', true),
     proposalEvaluationAiEnabled: await getSetting<boolean>(db, 'ai.proposal_evaluation.enabled', true),
@@ -407,13 +416,14 @@ export async function adminRoutes(
     if (p.tdsRateBps !== undefined) await setSetting(db, 'tax.tds_rate_bps', p.tdsRateBps, uid);
     if (p.gstTdsRateBps !== undefined) await setSetting(db, 'tax.gst_tds_rate_bps', p.gstTdsRateBps, uid);
     if (p.gstTdsThresholdPaise !== undefined) await setSetting(db, 'tax.gst_tds_threshold_paise', String(p.gstTdsThresholdPaise), uid);
+    if (p.dualApprovalThresholdPaise !== undefined) await setSetting(db, 'payments.dual_approval_threshold_paise', String(p.dualApprovalThresholdPaise), uid);
     if (p.slaDays !== undefined) await setSetting(db, 'sla.payment_days', p.slaDays, uid);
     if (p.assistantEnabled !== undefined) await setSetting(db, 'ai.assistant.enabled', p.assistantEnabled, uid);
     if (p.proposalEvaluationAiEnabled !== undefined) await setSetting(db, 'ai.proposal_evaluation.enabled', p.proposalEvaluationAiEnabled, uid);
     if (p.challengeDraftAiEnabled !== undefined) await setSetting(db, 'ai.challenge_draft.enabled', p.challengeDraftAiEnabled, uid);
     await auditService.logEvent({
       actorId: uid, actorName: authReq.user.name, actorRole: 'admin', action: 'SYSTEM_SETTINGS_UPDATED',
-      entityType: 'SETTINGS', entityId: 'system', details: { ...p, gstTdsThresholdPaise: p.gstTdsThresholdPaise !== undefined ? String(p.gstTdsThresholdPaise) : undefined },
+      entityType: 'SETTINGS', entityId: 'system', details: { ...p, gstTdsThresholdPaise: p.gstTdsThresholdPaise !== undefined ? String(p.gstTdsThresholdPaise) : undefined, dualApprovalThresholdPaise: p.dualApprovalThresholdPaise !== undefined ? String(p.dualApprovalThresholdPaise) : undefined },
       ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown'
     });
     return reply.send({ success: true, settings: await readSettings() });
@@ -487,6 +497,7 @@ export async function adminRoutes(
       await tx.query(`UPDATE access_requests SET status = 'APPROVED', reviewed_by_user_id = $1, reviewed_at = CURRENT_TIMESTAMP, review_note = $2, requested_role = $3, department_id = $4 WHERE id = $5`, [authReq.user.userId, parsed.data.note ?? null, role, departmentId ?? null, req.id]);
       await tx.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) VALUES ($1,$2,'Access approved',$3,'INFO',$4)`, [`NTF-${Date.now()}-${Math.floor(Math.random() * 1000)}`, req.user_id, `Your ${role} access was approved. You can now use your workspace.`, `/${role}/dashboard`]);
     });
+    await mailUser(req.user_id, 'Your access was approved', `Your ${role} access request was approved. You can now sign in and use your workspace.`);
     await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: 'ACCESS_REQUEST_APPROVED', entityType: 'USER', entityId: req.user_id, details: { requestId: req.id, role, departmentId }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
     return reply.send({ success: true });
   });
@@ -503,6 +514,7 @@ export async function adminRoutes(
       await tx.query(`UPDATE access_requests SET status = 'REJECTED', reviewed_by_user_id = $1, reviewed_at = CURRENT_TIMESTAMP, review_note = $2 WHERE id = $3`, [authReq.user.userId, parsed.data.note, req.id]);
       await tx.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) VALUES ($1,$2,'Access request not approved',$3,'WARNING','/')`, [`NTF-${Date.now()}-${Math.floor(Math.random() * 1000)}`, req.user_id, parsed.data.note]);
     });
+    await mailUser(req.user_id, 'Your access request was not approved', `An administrator reviewed your request and could not approve it. Reason: ${parsed.data.note}`);
     await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: 'ACCESS_REQUEST_REJECTED', entityType: 'USER', entityId: req.user_id, details: { requestId: req.id }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
     return reply.send({ success: true });
   });
@@ -528,6 +540,7 @@ export async function adminRoutes(
     await db.query(`UPDATE investor_profiles SET verification_status = $1, verification_notes = $2, verified_by_user_id = $3, verified_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $4`, [parsed.data.status, parsed.data.notes, authReq.user.userId, userId]);
     await db.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) VALUES ($1,$2,$3,$4,'INFO','/investor/profile')`,
       [`NTF-${Date.now()}-${Math.floor(Math.random() * 1000)}`, userId, parsed.data.status === 'VERIFIED' ? 'Investor profile verified' : 'Investor profile not verified', parsed.data.status === 'VERIFIED' ? 'You can now browse startups and request introductions.' : parsed.data.notes]);
+    await mailUser(userId, parsed.data.status === 'VERIFIED' ? 'Your investor profile was verified' : 'Your investor profile was not verified', parsed.data.status === 'VERIFIED' ? 'You can now browse startups and request introductions.' : `Reason: ${parsed.data.notes}`);
     await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: `INVESTOR_${parsed.data.status}`, entityType: 'USER', entityId: userId, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
     return reply.send({ success: true });
   });

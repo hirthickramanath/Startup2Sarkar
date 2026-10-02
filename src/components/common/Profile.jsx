@@ -10,7 +10,7 @@ const pill = { display: 'flex', alignItems: 'center', gap: 8, height: 40, paddin
 export const cardStyle = card;
 
 /** Ways to sign in. This is where "Connect to GitHub" lives (the profile page, not the dashboard). */
-export function LinkedAccounts() {
+export function LinkedAccounts({ allowGithub = true }) {
   const { toast } = useApp();
   const { config } = useAuth();
   const [data, setData] = useState(null);
@@ -38,7 +38,7 @@ export function LinkedAccounts() {
   const rows = [
     { id: 'google', name: 'Google', icon: <GoogleG size={22} />, available: data.googleAvailable },
     { id: 'github', name: 'GitHub', icon: <GitHubMark size={22} />, available: data.githubAvailable },
-  ].map((r) => ({ ...r, link: data.identities.find((i) => i.provider === r.id) }));
+  ].filter((r) => r.id !== 'github' || allowGithub).map((r) => ({ ...r, link: data.identities.find((i) => i.provider === r.id) }));
 
   return (
     <section style={card}>

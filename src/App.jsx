@@ -3,7 +3,10 @@ import { useApp, useAuth, shouldShowIntro } from './store';
 import { authApi } from './api';
 import { LoginPage } from './components/auth/LoginPage';
 import { Onboarding, AccessPending } from './components/auth/Onboarding';
+import { ResetPassword } from './components/auth/ResetPassword';
+import { AccountSecurity } from './components/common/AccountSecurity';
 import { InvestorDashboard, InvestorStartups, InvestorIntros, InvestorProfile } from './components/roles/investor/Investor';
+import { FinanceTaxLedger } from './components/roles/finance/FinanceTaxLedger';
 import { AdminAccessRequests } from './components/roles/admin/AdminAccess';
 import { AppShell } from './components/common/AppShell';
 import { ToastHost, useBusy } from './components/common/ui';
@@ -77,10 +80,12 @@ const ROUTES = [
   ['/finance/budget', 'Budgets', () => <FinanceBudget />],
   ['/finance/payments/:id', 'Payment claim', ({ id }) => <FinancePaymentDetail paymentId={id} />],
   ['/finance/payments', 'Payment claims', () => <FinancePaymentsList />],
+  ['/finance/tax-ledger', 'Tax ledger', () => <FinanceTaxLedger />],
   ['/finance/anomalies', 'Anomalies', () => <FinanceAnomalies />],
   ['/finance/stalled', 'Stalled pilots', () => <FinanceStalledPilots />],
   ['/finance/reports', 'Case files', () => <FinanceReports />],
 
+  ['/account', 'Account security', () => <AccountSecurity />],
   ['/investor/dashboard', 'Investor workspace', () => <InvestorDashboard />],
   ['/investor/startups', 'Startup directory', () => <InvestorStartups />],
   ['/investor/intros', 'My introductions', () => <InvestorIntros />],
@@ -173,7 +178,7 @@ export default function App() {
 
   if (isLoading) return <Splash />;
 
-  if (intro && !isAuthenticated) {
+  if (intro) {
     return (
       <Suspense fallback={<Splash />}>
         <Intro onDone={() => setIntro(false)} />
@@ -183,6 +188,7 @@ export default function App() {
 
   if (!isAuthenticated) {
     if (currentRoute === '/signup') return <><Onboarding /><ToastHost /></>;
+    if (currentRoute === '/reset-password') return <><ResetPassword /><ToastHost /></>;
     const m = currentRoute.match(/^\/login\/([a-z]+)/);
     return <><LoginPage initialRole={m ? m[1] : null} /><ToastHost /></>;
   }
@@ -191,7 +197,7 @@ export default function App() {
   if (currentRoute === '/' || currentRoute.startsWith('/login') || currentRoute === '/signup') return null;
 
   // Role gate (the server enforces this independently; this just gives a friendly screen)
-  const allowed = user.role === 'admin' || currentRoute.startsWith(`/${user.role}/`) || currentRoute === `/${user.role}`;
+  const allowed = user.role === 'admin' || currentRoute.startsWith(`/${user.role}/`) || currentRoute === `/${user.role}` || currentRoute === '/account';
   const match = allowed ? matchRoute(currentRoute) : null;
 
   return (

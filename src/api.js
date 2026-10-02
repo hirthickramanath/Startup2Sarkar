@@ -82,6 +82,8 @@ export const authApi = {
   accessRequest: () => api.get('/auth/access-request'),
   profileLinks: () => api.get('/auth/profile-links'),
   saveProfileLinks: (links) => api.put('/auth/profile-links', { links }),
+  forgotPassword: (email) => api.post('/auth/forgot-password', { email }),
+  resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
   changePassword: (currentPassword, newPassword) => api.post('/auth/change-password', { currentPassword, newPassword }),
 };
 
@@ -126,6 +128,12 @@ export const financeApi = {
   submitClaim: (d) => api.post('/finance/payments', d),
   approve: (id, remarks) => api.post(`/finance/payments/${id}/approve`, { remarks }),
   disburse: (id, disbursementReference) => api.post(`/finance/payments/${id}/disburse`, { disbursementReference }),
+  issueCheque: (id, d) => api.post(`/finance/payments/${id}/cheque`, d),
+  clearCheque: (id, clearedDate) => api.post(`/finance/payments/${id}/cheque/clear`, { clearedDate }),
+  bounceCheque: (id, reason) => api.post(`/finance/payments/${id}/cheque/bounce`, { reason }),
+  taxLedger: (status) => api.get(`/finance/tax-ledger${qs(status && status !== 'ALL' ? { status } : {})}`),
+  remitTax: (id, challanNumber, challanDate) => api.post(`/finance/tax-ledger/${id}/remit`, { challanNumber, challanDate }),
+  taxLedgerCsvUrl: () => `${API_BASE}/finance/reports/tax-ledger.csv`,
   hold: (id, reason) => api.post(`/finance/payments/${id}/hold`, { reason }),
   reject: (id, reason) => api.post(`/finance/payments/${id}/reject`, { reason }),
   anomalies: () => api.get('/finance/anomalies'),
@@ -185,3 +193,12 @@ export const auditApi = { mine: () => api.get('/audit') };
 export const searchApi = { query: (q, f) => api.get(`/search${qs({ q, ...f })}`) };
 export const publicApi = { stats: () => api.get('/public/stats'), departments: () => api.get('/public/departments') };
 export const filesApi = { upload: (fd) => api.post('/files/upload', fd) };
+
+export const managementApi = {
+  extendPilot: (id, months, reason) => api.post(`/pilots/${id}/extend`, { months, reason }),
+  terminatePilot: (id, reason) => api.post(`/pilots/${id}/terminate`, { reason }),
+  withdrawProposal: (id) => api.post(`/proposals/${id}/withdraw`),
+  extendDeadline: (id, deadline, reason) => api.post(`/challenges/${id}/extend-deadline`, { deadline, reason }),
+  addAddendum: (id, title, body) => api.post(`/challenges/${id}/addenda`, { title, body }),
+  addenda: (id) => api.get(`/challenges/${id}/addenda`),
+};

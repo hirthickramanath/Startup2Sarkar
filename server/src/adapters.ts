@@ -15,6 +15,30 @@ export interface EmailProvider {
   sendEmail(message: EmailMessage): Promise<{ success: boolean; messageId: string }>;
 }
 
+/** Sends through Brevo's transactional email API. Needs BREVO_API_KEY and a verified sender address (EMAIL_FROM). */
+export class BrevoEmailProvider implements EmailProvider {
+  constructor(private apiKey: string, private from: { email: string; name: string }, private fetchImpl: typeof fetch = fetch) {}
+  async sendEmail(message: EmailMessage): Promise<{ success: boolean; messageId: string }> {
+    const res = await this.fetchImpl('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'api-key': this.apiKey, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ sender: this.from, to: [{ email: message.to }], subject: message.subject, htmlContent: message.html, textContent: message.text }),
+      signal: AbortSignal.timeout(8000)
+    });
+    const json: any = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`The email provider rejected the message (HTTP ${res.status})`);
+    return { success: true, messageId: String(json.messageId || '') };
+  }
+}
+
+/** Real email when BREVO_API_KEY and EMAIL_FROM are set; otherwise messages are only recorded in memory (development). */
+export function createEmailProvider(): EmailProvider {
+  if (process.env.BREVO_API_KEY && process.env.EMAIL_FROM) {
+    return new BrevoEmailProvider(process.env.BREVO_API_KEY, { email: process.env.EMAIL_FROM, name: process.env.EMAIL_FROM_NAME || 'Startup2Sarkar' });
+  }
+  return new DevelopmentEmailProvider();
+}
+
 export class DevelopmentEmailProvider implements EmailProvider {
   private sentEmails: EmailMessage[] = [];
 

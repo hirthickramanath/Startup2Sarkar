@@ -5,6 +5,7 @@ import {
   FileText, CheckCircle2, ShieldCheck, Send, Sparkles 
 } from 'lucide-react';
 import { StatusBadge } from '../../common/ui';
+import { AddendaList } from '../../common/Management';
 
 export function StartupChallengeDetail({ challengeId }) {
   const { state, navigate } = useApp();
@@ -176,6 +177,7 @@ export function StartupChallengeDetail({ challengeId }) {
           </div>
         </div>
       </div>
+      <AddendaList challengeId={challenge.id} />
     </div>
   );
 }

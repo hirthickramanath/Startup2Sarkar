@@ -4,7 +4,7 @@ import {
   Building, Compass, FileText, CheckSquare, Shield, 
   CreditCard, AlertTriangle, Users, Settings, Bell, 
   Search, Cpu, ChevronRight, Menu, X, LogOut, 
-  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers, TrendingUp
+  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers, TrendingUp, KeyRound
 } from 'lucide-react';
 import { Logo, ThemeControls } from './ui';
 import { GlobalSearchModal } from './GlobalSearchModal';
@@ -66,6 +66,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           { label: 'Treasury Dashboard', route: '/finance/dashboard', icon: Building },
           { label: 'Budget Allocation', route: '/finance/budget', icon: Layers },
           { label: 'Payment Claims', route: '/finance/payments', icon: CreditCard, count: state.payments.filter(p => ['SUBMITTED','UNDER_REVIEW','VERIFICATION_PENDING','FINANCE_REVIEW'].includes(p.rawStatus)).length },
+          { label: 'Tax Ledger', route: '/finance/tax-ledger', icon: Layers },
           { label: 'Financial Anomalies', route: '/finance/anomalies', icon: AlertTriangle, count: state.anomalies.filter(a => ['DETECTED','INVESTIGATING'].includes(a.rawStatus)).length, badgeType: 'danger' },
           { label: 'Stalled Projects & Recovery', route: '/finance/stalled', icon: Shield },
           { label: 'Audit Case Files', route: '/finance/reports', icon: FileText }
@@ -223,6 +224,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
 
           {/* Notifications Dropdown */}
           <ThemeControls compact />
+          <button type="button" aria-label="Account security" title="Account security" onClick={() => navigate('/account')} style={{ display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 'var(--radius-md)', border: '1px solid var(--slate-300)', background: 'var(--white)', color: 'var(--slate-800)', cursor: 'pointer' }}><KeyRound size={17} /></button>
           <div style={{ position: 'relative' }}>
             <button
               type="button"
@@ -499,6 +501,12 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           width: '100%',
           overflowX: 'hidden'
         }}>
+          {['government', 'finance', 'inspector', 'admin'].includes(currentUser?.role) && currentUser?.mfaEnabled === false && currentRoute !== '/account' && (
+            <div role="status" style={{ display: 'flex', gap: '.75rem', alignItems: 'center', flexWrap: 'wrap', padding: '.7rem 1rem', marginBottom: '1rem', borderRadius: 'var(--radius-md)', background: 'var(--warning-bg)', border: '1px solid var(--warning-border)', color: 'var(--warning-text)', fontSize: '.84rem' }}>
+              <Shield size={16} /> <span style={{ flex: 1 }}>Your account handles public money. Please turn on two-step verification.</span>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => navigate('/account')}>Set it up</button>
+            </div>
+          )}
           {children}
         </main>
       </div>

@@ -32,7 +32,12 @@ export function Onboarding() {
 
   useEffect(() => {
     authApi.onboardingPrefill()
-      .then((p) => { setPrefill(p); setF((x) => ({ ...x, name: p.name || '' })); })
+      .then((p) => {
+        setPrefill(p); setF((x) => ({ ...x, name: p.name || '' }));
+        let wanted = null; try { wanted = sessionStorage.getItem('s2s_signup_role'); } catch { /* private mode */ }
+        if (p.provider === 'github') setRole('startup');
+        else if (CHOICES.some((c) => c.key === wanted)) setRole(wanted);
+      })
       .catch(() => setMissing(true));
   }, []);
 
@@ -79,8 +84,9 @@ export function Onboarding() {
 
               <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'contents' }}>
                 <legend style={{ font: '600 14px Figtree, sans-serif', color: 'var(--ink)', marginBottom: 8 }}>I am joining as…</legend>
+                {prefill.provider === 'github' && <p className="lp-note" style={{ margin: '0 0 8px' }}>GitHub sign-up is for startups. To join as another role, go back and use Google.</p>}
                 <div className="lp-roles">
-                  {CHOICES.map((c) => {
+                  {CHOICES.filter((c) => prefill.provider !== 'github' || c.key === 'startup').map((c) => {
                     const Icon = c.icon;
                     const on = role === c.key;
                     return (

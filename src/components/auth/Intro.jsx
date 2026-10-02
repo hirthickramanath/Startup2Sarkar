@@ -5,8 +5,6 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
  * the span connects, mo.js bursts, then the name and tagline resolve.
  * Skip: button, Esc, Enter, Space or click. Plays once per browser session; honours prefers-reduced-motion.
  */
-const INTRO_KEY = 's2s_intro_seen';
-
 const NAME = 'Startup2Sarkar'.split('');
 // Points on the cubic arch (same curve as #span) where the suspender lines hang down to the deck
 const bez = (t, a, b, c, d) => (1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t ** 2 * c + t ** 3 * d;
@@ -23,7 +21,6 @@ export function Intro({ onDone }) {
   const finish = useCallback(() => {
     if (finished.current) return;
     finished.current = true;
-    try { sessionStorage.setItem(INTRO_KEY, '1'); } catch { /* private mode */ }
     setLeaving(true);
     setTimeout(onDone, 450);
   }, [onDone]);

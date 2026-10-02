@@ -188,8 +188,8 @@ describe('Budget availability (allocated − committed − disbursed)', () => {
   before(async () => { db = getDatabase(); app = await buildApp({ db }); });
   after(async () => { await app.close(); });
   it('paid-out money reduces what a department can still commit', async () => {
-    await db.query(`INSERT INTO departments (id, name, code, ministry, budget_allocated_paise, budget_committed_paise, budget_disbursed_paise) VALUES ('DEPT-B','B','B','M',1000,200,300) ON CONFLICT (id) DO NOTHING`);
-    const r = await db.query(`SELECT (budget_allocated_paise - budget_committed_paise - budget_disbursed_paise) AS a FROM departments WHERE id = 'DEPT-B'`);
+    await db.query(`INSERT INTO departments (id, name, code, ministry, budget_allocated_paise, budget_committed_paise, budget_disbursed_paise) VALUES ('DEPT-BUDGET-T','Budget T','BUDGET-T','M',1000,200,300) ON CONFLICT (id) DO NOTHING`);
+    const r = await db.query(`SELECT (budget_allocated_paise - budget_committed_paise - budget_disbursed_paise) AS a FROM departments WHERE id = 'DEPT-BUDGET-T'`);
     assert.strictEqual(Number(r.rows[0].a), 500);
   });
 });

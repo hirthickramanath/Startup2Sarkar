@@ -16,10 +16,14 @@ The app creates all tables itself on first start (idempotent migrations). Never 
 Google Cloud Console → APIs & Services → Credentials → OAuth client ID (Web application).
 **Authorized JavaScript origins**: your exact site URL, `https://…`, no trailing slash (add `http://localhost:3001` for local tests). No redirect URIs are needed. Publish the consent screen so users beyond test users can sign in. Set the Client ID as `GOOGLE_CLIENT_ID`.
 
-## 2b. GitHub sign-in (optional)
+## 2a. Email (optional): forgot-password and decision emails
+
+Create a Brevo account (brevo.com), verify a sender address (best: an address on a domain you own, with the SPF and DKIM records Brevo shows you), and create an API key. Set `BREVO_API_KEY` and `EMAIL_FROM` (the verified sender) on the host. Once both are set the sign-in page shows **Forgot password?** and people are emailed when an administrator approves or rejects their access or verifies an investor. Check Brevo's current free-plan daily limit on its pricing page. Reset links work once and expire after 30 minutes. If email is not configured, staff can still ask an administrator to reset their password.
+
+## 2b. GitHub sign-in (optional, startups only)
 
 GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.
-**Homepage URL**: your site. **Authorization callback URL**: `https://<your-site>/api/v1/auth/github/callback` (exact; no trailing slash). Create the app, copy the **Client ID**, generate a **Client secret**, and set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and `PUBLIC_URL` (your site's address) on the host. The secret must never go in the repository. If a person's GitHub account has no *verified* email, they are asked to verify one on GitHub first.
+**Homepage URL**: your site. **Authorization callback URL**: `https://<your-site>/api/v1/auth/github/callback` (exact; no trailing slash). Create the app, copy the **Client ID**, generate a **Client secret**, and set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and `PUBLIC_URL` (your site's address) on the host. The secret must never go in the repository. If a person's GitHub account has no *verified* email, they are asked to verify one on GitHub first. GitHub sign-in is deliberately limited to **startups**; government, finance, inspector, investor and admin accounts use Google or a password.
 
 ## 3. Run it (Render)
 
@@ -45,10 +49,14 @@ After deploy: open `/health` (should say UP), add the site URL to Google's autho
 
 `docker build -t s2s . && docker run -p 3001:3001 --env-file .env s2s` (copy `.env.example` to `.env`). Behind a proxy keep `TRUST_PROXY` on. `docker compose up --build` starts the app with its own Postgres (set `POSTGRES_PASSWORD` in `.env`).
 
+## 3b. Upgrading an existing deployment
+
+New releases add database tables and columns automatically on start (migrations `002`-`005`, all idempotent). Watch the first deploy's log for any migration error. Back up the database before upgrading a deployment that holds real data.
+
 ## 4. After it is live
 
 - Create departments and budgets (Admin → Departments), then invite officials, finance officers and inspectors (Admin → Users). Each gets a one-time temporary password.
-- Review the rates in Admin → System settings against current tax rules.
+- Review the rates in Admin → System settings against current tax rules, and set the **two-person approval amount** (default ₹50,00,000).
 - Check Admin → AI governance to see exactly what the AI can use.
 
 ## Troubleshooting

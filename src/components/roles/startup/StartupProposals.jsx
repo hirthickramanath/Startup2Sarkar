@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { StatusBadge } from '../../common/ui';
 import { DataTable } from '../../common/ui';
+import { WithdrawProposal } from '../../common/Management';
 
 export function StartupProposals() {
   const { state, navigate } = useApp();
@@ -168,6 +169,7 @@ export function StartupProposals() {
           </div>
         </div>
       )}
+      <WithdrawProposal />
     </div>
   );
 }

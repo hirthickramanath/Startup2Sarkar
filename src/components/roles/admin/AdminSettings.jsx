@@ -19,6 +19,7 @@ export function AdminSettings() {
       gstTdsRateBps: Math.round(parseFloat(s.gstPct ?? pct(s.gstTdsRateBps)) * 100),
       gstTdsThresholdPaise: String(Math.round(parseFloat(s.thresholdRupees ?? Number(BigInt(s.gstTdsThresholdPaise) / 100n)) * 100)),
       slaDays: parseInt(s.slaDays, 10),
+      dualApprovalThresholdPaise: String(Math.round(parseFloat(s.dualRupees ?? Number(BigInt(s.dualApprovalThresholdPaise) / 100n)) * 100)),
     };
     const r = await act(() => adminApi.saveSettings(body), 'Settings saved and recorded in the audit trail');
     setS(r.settings);
@@ -35,6 +36,12 @@ export function AdminSettings() {
           <div className="form-group" style={{ margin: 0 }}><label className="form-label" htmlFor="thr">GST-TDS applies above contract value (₹)</label><input id="thr" type="number" min="0" className="form-control" value={s.thresholdRupees ?? Number(BigInt(s.gstTdsThresholdPaise) / 100n)} onChange={(e) => setS((x) => ({ ...x, thresholdRupees: e.target.value }))} /></div>
         </div>
         <p style={{ fontSize: '.78rem', color: 'var(--slate-500)', margin: 0 }}>Defaults: TDS 2% (s.194C for companies), GST-TDS 2% (s.51 CGST Act) above ₹2,50,000. Confirm current rates with your finance/tax advisor — they change with law.</p>
+        <h3 style={{ fontSize: '.95rem', margin: '.5rem 0 0' }}>Payment controls</h3>
+        <div className="form-group" style={{ margin: 0, maxWidth: 360 }}>
+          <label className="form-label" htmlFor="dual">Two-person approval from claim amount (₹)</label>
+          <input id="dual" type="number" min="0" className="form-control" value={s.dualRupees ?? Number(BigInt(s.dualApprovalThresholdPaise) / 100n)} onChange={num('dualRupees')} />
+          <small style={{ color: 'var(--slate-500)' }}>Claims at or above this gross amount need two different finance officers, and a third person to record the payment.</small>
+        </div>
         <h3 style={{ fontSize: '.95rem', margin: '.5rem 0 0' }}>Service levels</h3>
         <div className="form-group" style={{ margin: 0, maxWidth: 220 }}><label className="form-label" htmlFor="sla">Payment processing SLA (days)</label><input id="sla" type="number" min="1" max="90" className="form-control" value={s.slaDays} onChange={num('slaDays')} /></div>
         <div><button className="btn btn-primary" disabled={busy} onClick={save}><Save size={15} /> {busy ? 'Saving…' : 'Save settings'}</button></div>
