@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth, useApp } from '../../store';
 import { authApi } from '../../api';
 import { Logo, ThemeControls } from '../common/ui';
+import { Captcha } from '../common/Captcha';
 import { GoogleG, GitHubMark } from './LoginPage';
 import { AlertCircle, Loader2, Building2, Rocket, Search, Wallet, TrendingUp, Clock, XCircle, LogOut, RefreshCw } from 'lucide-react';
 
@@ -20,7 +21,8 @@ function Field({ label, hint, children }) {
 
 /** Shown after a first Google/GitHub sign-in: a few questions, then the account is created. */
 export function Onboarding() {
-  const { completeOnboarding } = useAuth();
+  const { completeOnboarding, config } = useAuth();
+  const [captcha, setCaptcha] = useState(null);
   const { navigate } = useApp();
   const [prefill, setPrefill] = useState(null);
   const [missing, setMissing] = useState(false);
@@ -47,7 +49,7 @@ export function Onboarding() {
     e.preventDefault(); setErr(null); setBusy(true);
     try {
       const sectors = (f.sectors || '').split(',').map((x) => x.trim()).filter(Boolean);
-      const payload = { role, name: f.name, phone: f.phone, acceptTerms: !!f.acceptTerms };
+      const payload = { role, name: f.name, phone: f.phone, acceptTerms: !!f.acceptTerms, captchaToken: captcha };
       if (role === 'startup') Object.assign(payload, { startupName: f.startupName, sector: f.sector, dpiitNumber: f.dpiitNumber });
       if (role === 'investor') Object.assign(payload, { investorType: f.investorType, organisation: f.organisation, website: f.website || '', linkedinUrl: f.linkedinUrl || '', sectors });
       if (['government', 'finance', 'inspector'].includes(role)) Object.assign(payload, { departmentId: f.departmentId, designation: f.designation, officialEmail: f.officialEmail, employeeId: f.employeeId || '', reason: f.reason });
@@ -76,7 +78,7 @@ export function Onboarding() {
               <div>
                 <h2>Welcome. Let's finish your account.</h2>
                 <p className="lp-sub" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {prefill.provider === 'github' ? <GitHubMark size={16} /> : <GoogleG size={16} />}
+                  {prefill.provider === 'github' ? <GitHubMark size={16} /> : prefill.provider === 'google' ? <GoogleG size={16} /> : null}
                   Signed in as <strong>{prefill.email}</strong>
                 </p>
               </div>
@@ -153,7 +155,8 @@ export function Onboarding() {
                     <input type="checkbox" checked={!!f.acceptTerms} onChange={(e) => setF((x) => ({ ...x, acceptTerms: e.target.checked }))} required />
                     <span>I agree to the terms of use and understand how my details are used to run this service.</span>
                   </label>
-                  <button type="submit" className="lp-primary" disabled={busy}>{busy ? <><Loader2 size={16} className="spin" /> Creating…</> : choice.approval ? 'Send access request' : 'Create my account'}</button>
+                  {config.turnstileSiteKey && <Captcha onToken={setCaptcha} />}
+                  <button type="submit" className="lp-primary" disabled={busy || (config.turnstileSiteKey && !captcha)}>{busy ? <><Loader2 size={16} className="spin" /> Creating…</> : choice.approval ? 'Send access request' : 'Create my account'}</button>
                 </>
               )}
             </form>

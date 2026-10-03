@@ -227,7 +227,7 @@ export function createAuthMiddleware(db: DatabaseAdapter) {
 
     // Verify session still exists in database and user is active
     const sessionRes = await db.query(
-      `SELECT s.id, u.is_active, u.status, u.role, u.department_id, u.organization_id
+      `SELECT s.id, u.is_active, u.status, u.mfa_enabled, u.role, u.department_id, u.organization_id
        FROM sessions s
        JOIN users u ON s.user_id = u.id
        WHERE s.id = $1 AND s.expires_at > CURRENT_TIMESTAMP`,
@@ -252,6 +252,14 @@ export function createAuthMiddleware(db: DatabaseAdapter) {
       }
     }
 
+    // Staff must have two-step verification before they can reach any data
+    if (staffMfaRequired() && STAFF_ROLES.includes(sessionRes.rows[0].role) && !sessionRes.rows[0].mfa_enabled) {
+      const path = request.url.split('?')[0];
+      if (!path.startsWith('/api/v1/auth/')) {
+        return reply.status(403).send({ error: 'Turn on two-step verification to continue.', code: 'MFA_ENROLMENT_REQUIRED' });
+      }
+    }
+
     // Investors are walled off: the ONLY places an investor token works are listed here. Everything else (including any
     // endpoint that has a "show everyone else all rows" branch) is closed to them by default.
     if (sessionRes.rows[0].role === 'investor') {
@@ -272,6 +280,12 @@ export function createAuthMiddleware(db: DatabaseAdapter) {
   };
 }
 
+export const STAFF_ROLES = ['government', 'finance', 'inspector', 'admin'];
+/** Staff handle public money, so two-step verification is mandatory in production (override with REQUIRE_STAFF_MFA=true|false). */
+export function staffMfaRequired(): boolean {
+  const v = process.env.REQUIRE_STAFF_MFA;
+  return v ? v === 'true' : process.env.NODE_ENV === 'production';
+}
 export type RoleName = 'government' | 'startup' | 'inspector' | 'finance' | 'admin' | 'investor';
 export function requireRole(...allowedRoles: RoleName[]) {
   return async function roleGuard(request: FastifyRequest, reply: FastifyReply) {

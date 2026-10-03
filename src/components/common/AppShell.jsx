@@ -4,7 +4,7 @@ import {
   Building, Compass, FileText, CheckSquare, Shield, 
   CreditCard, AlertTriangle, Users, Settings, Bell, 
   Search, Cpu, ChevronRight, Menu, X, LogOut, 
-  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers, TrendingUp, KeyRound
+  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers, TrendingUp, KeyRound, ShieldCheck
 } from 'lucide-react';
 import { Logo, ThemeControls } from './ui';
 import { GlobalSearchModal } from './GlobalSearchModal';
@@ -67,6 +67,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           { label: 'Budget Allocation', route: '/finance/budget', icon: Layers },
           { label: 'Payment Claims', route: '/finance/payments', icon: CreditCard, count: state.payments.filter(p => ['SUBMITTED','UNDER_REVIEW','VERIFICATION_PENDING','FINANCE_REVIEW'].includes(p.rawStatus)).length },
           { label: 'Tax Ledger', route: '/finance/tax-ledger', icon: Layers },
+          { label: 'Bank Reconciliation', route: '/finance/reconcile', icon: FileText },
           { label: 'Financial Anomalies', route: '/finance/anomalies', icon: AlertTriangle, count: state.anomalies.filter(a => ['DETECTED','INVESTIGATING'].includes(a.rawStatus)).length, badgeType: 'danger' },
           { label: 'Stalled Projects & Recovery', route: '/finance/stalled', icon: Shield },
           { label: 'Audit Case Files', route: '/finance/reports', icon: FileText }
@@ -82,6 +83,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
         return [
           { label: 'Platform Console', route: '/admin/dashboard', icon: Building },
           { label: 'Access Requests', route: '/admin/access-requests', icon: CheckSquare, count: (state.accessRequests || []).length },
+          { label: 'Startup Verification', route: '/admin/startups', icon: ShieldCheck },
           { label: 'User Directory', route: '/admin/users', icon: Users },
           { label: 'Departments', route: '/admin/departments', icon: Layers },
           { label: 'AI Configuration', route: '/admin/ai', icon: Cpu },

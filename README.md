@@ -4,7 +4,7 @@
 
 It is built to replace the usual mix of emails, spreadsheets and paper files in startup-led pilots with one system where **money is exact, every decision has a named person, and nobody sees data they are not meant to see.**
 
-> **Status: a serious prototype.** It runs, it is tested (107 automated backend tests), and it has been exercised end to end in a real browser. It has **not** had an independent security or accessibility audit, and has not been load-tested. Read [Known limits](#known-limits-and-roadmap) before putting real money or citizen data through it.
+> **Status: a serious prototype.** It runs, it is tested (126 automated backend tests), and it has been exercised end to end in a real browser. It has **not** had an independent security or accessibility audit, and has not been load-tested. Read [Known limits](#known-limits-and-roadmap) before putting real money or citizen data through it.
 
 ---
 
@@ -41,16 +41,19 @@ It is built to replace the usual mix of emails, spreadsheets and paper files in 
 ## What is in the box
 
 - Role-based web app (React) and a JSON API (Fastify) served from **one container on one port**.
-- **Sign-in**: email and password (Argon2id, optional TOTP MFA, lockout), **Google** for every role and **GitHub for startups only**; accounts can link several methods. Social buttons appear after a role is chosen.
+- **Sign-in and sign-up**: email and password (Argon2id, TOTP MFA, lockout), **Google** for every role and **GitHub for startups only**; accounts can link several methods. Everyone except administrators can sign up by email (confirmed by a link) or by Google, then answer role-specific questions. Social buttons appear after a role is chosen.
 - **Onboarding wizard** for new Google/GitHub users with role-specific questions; an **access-request queue** for staff roles.
 - **Investor network**: investor profile, opt-in startup showcase, introduction requests with contact details revealed only on acceptance.
 - **Profile links** (resume, LinkedIn, GitHub, deck, demo video…): https only.
 - **Finance controls**: exact money math, configurable tax rates, budget reservation with an "as of" time, cheque or electronic payment, two-person approval with segregation of duties, tax ledger with CSV export, printable payment advice, anomaly detection, stalled-pilot sentinel, CSV and PDF case files.
-- **Pilot, proposal and challenge management**: extend or terminate a pilot, withdraw a proposal, extend a challenge deadline and post addenda that every bidder can read.
-- **Account security**: forgot-password by email, change password, and a reminder for staff to turn on two-step verification.
+- **Pilot, proposal and challenge management**: extend or terminate a pilot, save proposal **drafts** and submit when ready, withdraw a proposal, extend a challenge deadline, post addenda, run a public **question and answer** thread (answered questions are shown to every bidder), and copy a challenge as a template.
+- **Verification**: startups upload up to four statutory documents (PDF only, content-checked, private, integrity-hashed) to **Supabase Storage or local disk**; administrators review them with a **checklist** and automatic **warnings when startups share a bank account, GSTIN or phone number**.
+- **Bank reconciliation**: upload a bank statement CSV; cheques and transfers are matched to claims by number and amount; finance reviews, then applies.
+- **Trend charts** on the finance and admin dashboards.
+- **Account security**: forgot-password by email, change password, **mandatory two-step verification for staff in production** (a full-screen enrolment with QR code and recovery codes, enforced on the server), and an optional **Cloudflare Turnstile** human check on sign-up and reset.
 - **AI assistant** that answers from the signed-in user's own records (rules engine; optional Gemini, fenced in).
 - **Themes**: three named themes (Graphite, Burst, Meadow), each in light and dark, remembered per browser; skippable brand intro animation.
-- Docker, Render blueprint, CI workflow, OpenAPI docs (development). The brand intro plays on every normal page load and can be skipped.
+- Docker, Render blueprint, CI workflow, OpenAPI docs (development). The brand intro (drawn in the app's own theme colours) plays on every normal page load and can be skipped; a logo pack lives in `public/logo/`.
 
 ## Languages and stack
 
@@ -81,10 +84,12 @@ server/src/
   audit.ts          hash-chained audit log + integrity check
   reports.ts        CSV / PDF case files and exports
   scheduler.ts      background sentinels (stalled pilots, payment SLA)
-  adapters.ts       storage, treasury and email provider interfaces
+  adapters.ts       treasury and email providers (Brevo or development)
+  objectstore.ts    private document storage (Supabase Storage or local disk)
+  captcha.ts        Cloudflare Turnstile verification (fails closed)
   routes/           auth · identity · challenges · proposals · pilots · finance · admin · network · assistant · platform
-  migrations/       001_initial_schema.sql · 002_identity.sql · 003_payments.sql · 004_email.sql · 005_management.sql  (idempotent, run on every start)
-server/tests/       api-integration · idor-security · domain-unit · s2s · identity · payments · management
+  migrations/       001_initial_schema.sql · 002_identity.sql · 003_payments.sql · 004_email.sql · 005_management.sql · 006_platform.sql  (idempotent, run on every start)
+server/tests/       api-integration · idor-security · domain-unit · s2s · identity · payments · management · platform
 src/
   main.jsx, App.jsx           providers, route table, role gate, error boundary
   store.jsx                   theme + auth + app state, all real API actions (no mock data)
@@ -130,6 +135,9 @@ All settings are environment variables. Copy `.env.example` to `.env` for local 
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` | first run | Creates the first Super Admin if none exists. If no password is given a strong one is generated and printed once |
 | `GOOGLE_CLIENT_ID` | optional | Enables Google sign-in (public value) |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `PUBLIC_URL` | optional | Enables GitHub sign-in for startups; the callback is `PUBLIC_URL/api/v1/auth/github/callback` |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | optional | Turns on the human check on sign-up, onboarding, registration and password reset |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_BUCKET` | optional | Persistent private storage for uploaded documents (otherwise local disk under `UPLOAD_DIR`) |
+| `REQUIRE_STAFF_MFA` | optional | Staff two-step verification: on by default in production, `false` to disable |
 | `BREVO_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME` | optional | Enables forgot-password and decision emails through Brevo (needs a verified sender) |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | optional | Enables the Gemini-backed assistant (otherwise the built-in rules engine is used) |
 | `MARKET_DATA` | optional | `off` disables the exchange-rate feed |
@@ -166,7 +174,7 @@ With `GEMINI_API_KEY` set, the assistant uses Gemini, **fenced in**: no tools (n
 Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cookie (or `Authorization: Bearer <token>`). Interactive OpenAPI docs are served at `/docs` in development. The tables below are **generated from the route code**; a role list means only those roles may call the endpoint, and every role-less authenticated route still applies per-record checks inside the handler.
 
 <details>
-<summary><b>/api/v1/auth</b> (26 endpoints)</summary>
+<summary><b>/api/v1/auth</b> (28 endpoints)</summary>
 
 | Method | Path | Who may call it |
 |---|---|---|
@@ -196,11 +204,13 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 | `POST` | `/api/v1/auth/register-startup` | public |
 | `POST` | `/api/v1/auth/reset-password` | public |
 | `GET` | `/api/v1/auth/sessions` | any signed-in user |
+| `POST` | `/api/v1/auth/signup-email` | public |
+| `GET` | `/api/v1/auth/verify-email` | public |
 
 </details>
 
 <details>
-<summary><b>/api/v1/challenges</b> (9 endpoints)</summary>
+<summary><b>/api/v1/challenges</b> (13 endpoints)</summary>
 
 | Method | Path | Who may call it |
 |---|---|---|
@@ -210,22 +220,30 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 | `GET` | `/api/v1/challenges/:id/addenda` | any signed-in user |
 | `POST` | `/api/v1/challenges/:id/addenda` | government, admin |
 | `POST` | `/api/v1/challenges/:id/close` | government, admin |
+| `POST` | `/api/v1/challenges/:id/duplicate` | government, admin |
 | `POST` | `/api/v1/challenges/:id/extend-deadline` | government, admin |
 | `POST` | `/api/v1/challenges/:id/publish` | government, admin |
+| `GET` | `/api/v1/challenges/:id/questions` | any signed-in user |
+| `POST` | `/api/v1/challenges/:id/questions` | startup |
+| `POST` | `/api/v1/challenges/:id/questions/:qid/answer` | government, admin |
 | `POST` | `/api/v1/challenges/ai-generate` | government, admin |
 
 </details>
 
 <details>
-<summary><b>/api/v1/proposals</b> (5 endpoints)</summary>
+<summary><b>/api/v1/proposals</b> (9 endpoints)</summary>
 
 | Method | Path | Who may call it |
 |---|---|---|
 | `GET` | `/api/v1/proposals` | any signed-in user |
 | `POST` | `/api/v1/proposals` | startup |
 | `POST` | `/api/v1/proposals/:id/ai-evaluate` | government, admin |
+| `DELETE` | `/api/v1/proposals/:id/draft` | startup |
+| `PUT` | `/api/v1/proposals/:id/draft` | startup |
 | `POST` | `/api/v1/proposals/:id/select` | government, admin |
+| `POST` | `/api/v1/proposals/:id/submit` | startup |
 | `POST` | `/api/v1/proposals/:id/withdraw` | startup |
+| `POST` | `/api/v1/proposals/drafts` | startup |
 
 </details>
 
@@ -255,7 +273,7 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 </details>
 
 <details>
-<summary><b>/api/v1/finance</b> (24 endpoints)</summary>
+<summary><b>/api/v1/finance</b> (27 endpoints)</summary>
 
 | Method | Path | Who may call it |
 |---|---|---|
@@ -274,6 +292,8 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 | `POST` | `/api/v1/finance/payments/:id/disburse` | finance, admin |
 | `POST` | `/api/v1/finance/payments/:id/hold` | finance, admin |
 | `POST` | `/api/v1/finance/payments/:id/reject` | finance, admin |
+| `POST` | `/api/v1/finance/reconcile` | finance, admin |
+| `POST` | `/api/v1/finance/reconcile/apply` | finance, admin |
 | `GET` | `/api/v1/finance/reports/budget.csv` | finance, admin |
 | `GET` | `/api/v1/finance/reports/case-file/:id` | finance, admin |
 | `GET` | `/api/v1/finance/reports/case-file/:id.csv` | finance, admin |
@@ -283,11 +303,12 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 | `GET` | `/api/v1/finance/stalled` | finance, admin |
 | `GET` | `/api/v1/finance/tax-ledger` | finance, admin |
 | `POST` | `/api/v1/finance/tax-ledger/:id/remit` | finance, admin |
+| `GET` | `/api/v1/finance/trends` | finance, admin |
 
 </details>
 
 <details>
-<summary><b>/api/v1/admin</b> (20 endpoints)</summary>
+<summary><b>/api/v1/admin</b> (23 endpoints)</summary>
 
 | Method | Path | Who may call it |
 |---|---|---|
@@ -306,7 +327,10 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 | `GET` | `/api/v1/admin/settings` | admin |
 | `PUT` | `/api/v1/admin/settings` | admin |
 | `GET` | `/api/v1/admin/startups` | admin |
+| `PUT` | `/api/v1/admin/startups/:id/checklist` | admin |
+| `GET` | `/api/v1/admin/startups/:id/review` | admin |
 | `PUT` | `/api/v1/admin/startups/:id/verify` | admin |
+| `GET` | `/api/v1/admin/trends` | admin |
 | `GET` | `/api/v1/admin/users` | admin |
 | `PUT` | `/api/v1/admin/users/:id` | admin |
 | `POST` | `/api/v1/admin/users/:id/reset-password` | admin |
@@ -327,6 +351,18 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 | `PUT` | `/api/v1/network/me` | investor |
 | `PUT` | `/api/v1/network/showcase` | startup |
 | `GET` | `/api/v1/network/startups` | investor |
+
+</details>
+
+<details>
+<summary><b>/api/v1/documents</b> (4 endpoints)</summary>
+
+| Method | Path | Who may call it |
+|---|---|---|
+| `GET` | `/api/v1/documents` | startup, admin |
+| `POST` | `/api/v1/documents` | startup |
+| `GET` | `/api/v1/documents/:id/download` | startup, admin |
+| `PUT` | `/api/v1/documents/:id/review` | admin |
 
 </details>
 
@@ -399,7 +435,7 @@ Health probes: `GET /health` (liveness) and `GET /ready` (checks the database).
 
 PostgreSQL tables (all created by the idempotent migrations in `server/src/migrations/`):
 
-`access_requests`, `ai_audit_logs`, `ai_evaluations`, `audit_logs`, `auth_identities`, `challenge_addenda`, `challenges`, `departments`, `files`, `finance_anomalies`, `finance_payment_claims`, `investor_intros`, `investor_profiles`, `invitations`, `kpi_submissions`, `notifications`, `organizations`, `password_resets`, `pilot_inspections`, `pilot_kpis`, `pilot_milestones`, `pilots`, `profile_links`, `proposals`, `risks`, `sessions`, `stalled_pilots`, `system_settings`, `tax_remittances`, `users`
+`access_requests`, `ai_audit_logs`, `ai_evaluations`, `audit_logs`, `auth_identities`, `challenge_addenda`, `challenge_questions`, `challenges`, `departments`, `files`, `finance_anomalies`, `finance_payment_claims`, `investor_intros`, `investor_profiles`, `invitations`, `kpi_submissions`, `notifications`, `organization_documents`, `organizations`, `password_resets`, `pending_signups`, `pilot_inspections`, `pilot_kpis`, `pilot_milestones`, `pilots`, `profile_links`, `proposals`, `risks`, `sessions`, `stalled_pilots`, `system_settings`, `tax_remittances`, `users`
 
 Key rules: money columns are integer paise (`bigint`); `audit_logs` is append-only and hash-chained; `auth_identities` holds one row per linked sign-in provider; `access_requests` and `investor_profiles` back the approval flows.
 
@@ -416,7 +452,7 @@ Key rules: money columns are integer paise (`bigint`); `audit_logs` is append-on
 npm run typecheck && npm run lint && npm test
 ```
 
-107 backend tests cover: the full five-role procurement lifecycle and audit-chain integrity; per-role access boundaries; the tax engine; Google token verification; the GitHub flow with a mocked GitHub (CSRF state, verified-email rules, startups-only, no token storage); onboarding for every role; approval and rejection; pending-account lockout; **investor isolation across every non-investor endpoint**; introductions and contact reveal; linking and the last-method rule; proposal links; the **cheque lifecycle (spent only when cleared), returned cheques, two-person approval, segregation of duties and the tax ledger**; forgot-password and decision emails (with a mocked Brevo); pilot, proposal and challenge management actions; the assistant's scope fence; and the market feed. The suite also passes against a real PostgreSQL 16 (set `DATABASE_URL` and run with `--test-concurrency=1`). The interface has been exercised in a headless browser (themes, light/dark, GitHub sign-up wizard, approval, investor workspace, startup profile); there is no browser test suite in the repository yet (the scripts used for checking are not included).
+126 backend tests cover: the full five-role procurement lifecycle and audit-chain integrity; per-role access boundaries; the tax engine; Google token verification; the GitHub flow with a mocked GitHub; onboarding for every role; email sign-up and confirmation; approval and rejection; pending-account lockout; **investor isolation across every non-investor endpoint**; introductions; linking; proposal links and drafts; the **cheque lifecycle, two-person approval, segregation of duties and the tax ledger**; **bank-statement reconciliation**; forgot-password and decision emails (mocked Brevo); **mandatory staff two-step verification**; the **fail-closed CAPTCHA** (mocked Cloudflare); **document uploads** (content checks, privacy, integrity, mocked Supabase Storage); the verification checklist and duplicate-detail flags; challenge Q&A and templates; pilot, proposal and challenge management; the assistant's scope fence; and the market feed. The suite also passes against a real PostgreSQL 16 (set `DATABASE_URL` and run with `--test-concurrency=1`). The interface has been exercised in a headless browser (themes, light/dark, GitHub sign-up wizard, approval, investor workspace, startup profile); there is no browser test suite in the repository yet (the scripts used for checking are not included).
 
 ## Deployment
 
@@ -425,15 +461,12 @@ See **[docs/DEPLOY.md](docs/DEPLOY.md)** for Render + Supabase step by step, Goo
 ## Known limits and roadmap
 
 **Not built yet (planned)**
-- Bank-statement matching for cheques and transfers, and direct treasury (PFMS) or bank integration.
-- Staff and investor sign-up by email and password (they join through Google until email verification exists), and a CAPTCHA.
-- A screen for uploading the 3-4 statutory documents with persistent storage (links are used instead), and real DPIIT / CIN / PAN / GSTIN / bank verification APIs.
-- Proposal drafts, a challenge Q&A, dashboard trend charts, a forced two-step-verification enrolment screen (today a reminder banner), and an in-repo browser test suite.
-- The longer ideas list: scale-up pipeline, appeals, templates, fraud flags, committees, contract e-sign, mobile inspector app, regional languages, and so on.
+- Real **DPIIT / CIN / PAN / GSTIN / bank verification** through a government or commercial API (administrators verify manually with a checklist today), and direct treasury (PFMS) or bank integration.
+- An in-repo browser test suite, and the longer ideas list: scale-up pipeline, appeals, fraud scoring beyond shared-detail flags, evaluation committees, contract e-signing, a mobile inspector app, regional languages, and so on.
 
 **Know before you rely on it**
 - Not independently security- or accessibility-audited. Treat as a prototype.
-- Free hosting sleeps when idle and has no persistent disk; background jobs pause while asleep.
+- Free hosting sleeps when idle and has no persistent disk (use Supabase Storage for documents); background jobs pause while asleep.
 - Default tax rates (TDS 2%, GST-TDS 2% above ₹2.5 lakh) are general-knowledge defaults. **Have a tax advisor confirm them** (Admin → System settings).
 - `docs/SPEC.md` is the original requirements document: it describes intended scope, not what is implemented, and its legal citations are unverified.
 - Proposal "AI" scoring is a keyword heuristic.

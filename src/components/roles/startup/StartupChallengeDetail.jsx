@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { StatusBadge } from '../../common/ui';
 import { AddendaList } from '../../common/Management';
+import { ChallengeQA } from '../../common/Platform';
 
 export function StartupChallengeDetail({ challengeId }) {
   const { state, navigate } = useApp();
@@ -178,6 +179,7 @@ export function StartupChallengeDetail({ challengeId }) {
         </div>
       </div>
       <AddendaList challengeId={challenge.id} />
+      <ChallengeQA challengeId={challenge.id} role="startup" />
     </div>
   );
 }

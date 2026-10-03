@@ -24,6 +24,8 @@ import { adminRoutes } from './routes/admin';
 import { assistantRoutes } from './routes/assistant';
 import { identityRoutes } from './routes/identity';
 import { networkRoutes } from './routes/network';
+import { documentRoutes } from './routes/documents';
+import { createObjectStore, ObjectStore } from './objectstore';
 import { publicRoutes, fileRoutes, notificationRoutes, searchRoutes, auditViewRoutes } from './routes/platform';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,6 +39,10 @@ export interface AppOptions {
   githubFetch?: typeof fetch;
   /** Test hook / alternative mail provider */
   emailProvider?: EmailProvider;
+  /** Test hook: replace the network client used for the CAPTCHA check */
+  captchaFetch?: typeof fetch;
+  /** Test hook / alternative document storage */
+  objectStore?: ObjectStore;
   /** Directory of the built SPA; defaults to <repo>/dist */
   staticDir?: string;
 }
@@ -53,12 +59,12 @@ function cookieSecret(): string {
 /** Content-Security-Policy: first-party only, plus exactly what Google Sign-In and Google Fonts need. */
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' https://accounts.google.com/gsi/client",
+  "script-src 'self' https://accounts.google.com/gsi/client https://challenges.cloudflare.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style",
   "font-src 'self' https://fonts.gstatic.com data:",
   "img-src 'self' data: blob: https://*.googleusercontent.com",
-  "connect-src 'self' https://accounts.google.com/gsi/",
-  "frame-src https://accounts.google.com/gsi/",
+  "connect-src 'self' https://accounts.google.com/gsi/ https://challenges.cloudflare.com",
+  "frame-src https://accounts.google.com/gsi/ https://challenges.cloudflare.com",
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'none'",
@@ -142,9 +148,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
   // 4. API ───────────────────────────────────────────────────────────────
   app.register(async (api) => {
-    api.register(authRoutes, { prefix: '/auth', db, auditService });
-    api.register(identityRoutes, { prefix: '/auth', db, auditService, jwksFetcher: options.jwksFetcher, githubFetch: options.githubFetch, emailProvider });
+    api.register(authRoutes, { prefix: '/auth', db, auditService, captchaFetch: options.captchaFetch });
+    api.register(identityRoutes, { prefix: '/auth', db, auditService, jwksFetcher: options.jwksFetcher, githubFetch: options.githubFetch, emailProvider, captchaFetch: options.captchaFetch });
     api.register(networkRoutes, { prefix: '/network', db, auditService });
+    api.register(documentRoutes, { prefix: '/documents', db, auditService, objectStore: options.objectStore ?? createObjectStore() });
     api.register(challengeRoutes, { prefix: '/challenges', db, auditService, aiProvider });
     api.register(proposalRoutes, { prefix: '/proposals', db, auditService, aiProvider });
     api.register(pilotRoutes, { prefix: '/pilots', db, auditService });

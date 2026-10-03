@@ -270,6 +270,8 @@ function shapeUser(u) {
     mustChangePassword: !!(u.mustChangePassword ?? u.must_change_password),
     mfaEnabled: !!(u.mfaEnabled ?? u.mfa_enabled),
     status: u.status || 'ACTIVE',
+    mfaEnrolRequired: !!(u.mfaEnrolRequired ?? u.mfa_enrol_required),
+    hasPassword: u.hasPassword ?? u.has_password,
   };
 }
 
@@ -278,7 +280,7 @@ export function AuthProvider({ children }) {
   const [isLoading, setIsLoading] = useState(true);
   const [loginError, setLoginError] = useState(null);
   const [mfaChallenge, setMfaChallenge] = useState(null);
-  const [config, setConfig] = useState({ googleClientId: null, githubEnabled: false, emailEnabled: false, aiMode: 'local' });
+  const [config, setConfig] = useState({ googleClientId: null, githubEnabled: false, emailEnabled: false, turnstileSiteKey: null, aiMode: 'local' });
 
   const clearSession = useCallback(() => {
     setUser(null); clearAuthToken(); sessionStorage.removeItem(TOKEN_KEY); setMfaChallenge(null);
@@ -299,6 +301,7 @@ export function AuthProvider({ children }) {
         github_failed: 'GitHub did not complete the sign-in. Please try again.',
         github_not_configured: 'GitHub sign-in is not set up on this server yet.',
         github_startup_only: 'GitHub sign-in is available to startups only. Use Google or your password for this account.',
+        verify_failed: 'That confirmation link is invalid or has expired. Please sign up again.',
         no_verified_email: 'That account has no verified email address. Verify one with the provider, or sign in another way.',
         auth_failed: 'We could not sign you in with that account.',
       };

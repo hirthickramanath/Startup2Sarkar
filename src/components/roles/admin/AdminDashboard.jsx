@@ -3,6 +3,7 @@ import { useApp } from '../../../store';
 import { adminApi } from '../../../api';
 import { Users, Building2, ShieldCheck, ShieldAlert, Cpu, Rocket } from 'lucide-react';
 import { PageHeader } from '../../common/ui';
+import { AdminTrends } from '../../common/Platform';
 
 const Stat = ({ icon: Icon, label, value, color = '#2563eb', onClick, sub }) => (
   <div className="card" onClick={onClick} style={{ cursor: onClick ? 'pointer' : 'default', display: 'flex', gap: '.75rem', alignItems: 'center' }}>
@@ -50,6 +51,7 @@ export function AdminDashboard() {
           ))}
         </div>
       )}
+      <AdminTrends />
     </div>
   );
 }

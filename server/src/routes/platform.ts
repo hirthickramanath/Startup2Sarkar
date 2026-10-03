@@ -197,6 +197,7 @@ export async function publicRoutes(app: FastifyInstance, opts: { db: DatabaseAda
       googleClientId: process.env.GOOGLE_CLIENT_ID || null,
       githubEnabled: !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET),
       emailEnabled: !!(process.env.BREVO_API_KEY && process.env.EMAIL_FROM),
+      turnstileSiteKey: process.env.TURNSTILE_SITE_KEY || null,
       aiMode: process.env.GEMINI_API_KEY ? 'llm' : 'local'
     });
   });

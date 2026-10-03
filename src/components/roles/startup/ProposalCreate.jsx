@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../../store';
 import { ArrowLeft, CheckCircle2, AlertTriangle, Send, ShieldAlert } from 'lucide-react';
 import { useBusy, inr } from '../../common/ui';
+import { platformApi } from '../../../api';
 
 // Minimum lengths mirror the server-side validation so the founder sees problems before submitting.
 const FIELDS = [
@@ -13,13 +14,24 @@ const FIELDS = [
 ];
 
 export function ProposalCreate() {
-  const { state, query, submitProposal, navigate } = useApp();
+  const { state, query, submitProposal, navigate, toast, fetchLiveData } = useApp();
+  const draftParam = query.get('draft');
+  const [draftId, setDraftId] = useState(draftParam || null);
   const myStartup = state.startups[0];
   const open = useMemo(() => state.challenges.filter((c) => ['PUBLISHED', 'PROPOSALS_RECEIVED'].includes(c.rawStatus)), [state.challenges]);
   const [challengeId, setChallengeId] = useState(query.get('challenge') || '');
   const challenge = open.find((c) => c.id === challengeId);
   const [busy, run] = useBusy();
   const [form, setForm] = useState({ solutionTitle: '', summary: '', technicalApproach: '', deploymentPlan: '', timeline: '', cost: '', scaleupCost: '', deployments: '', certifications: '', links: [{ label: '', url: '' }, { label: '', url: '' }, { label: '', url: '' }] });
+  // Continue a saved draft: fill the form once from the stored values
+  useEffect(() => {
+    const d = draftParam && state.proposals.find((p) => p.id === draftParam && p.rawStatus === 'DRAFT');
+    if (!d) return;
+    const arr = (v) => (Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join('\n') : '');
+    const links = [...(Array.isArray(d.documents) ? d.documents : []), {}, {}, {}].slice(0, 3).map((l) => ({ label: l.label || '', url: l.url || '' }));
+    setForm({ solutionTitle: d.solutionTitle || '', summary: d.summary || '', technicalApproach: d.technicalApproach || '', deploymentPlan: d.deploymentPlan || '', timeline: d.implementationTimeline || '',
+      cost: d.pilotCostPaise ? String(d.pilotCostPaise / 100) : '', scaleupCost: d.scaleupCostPaise ? String(d.scaleupCostPaise / 100) : '', deployments: arr(d.evidenceDeployments), certifications: arr(d.certifications), links });
+  }, [draftParam]); // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const setLink = (i, k) => (e) => setForm((f) => ({ ...f, links: f.links.map((l, j) => (j === i ? { ...l, [k]: e.target.value } : l)) }));
   const filledLinks = form.links.filter((l) => l.url.trim() || l.label.trim());
@@ -43,7 +55,25 @@ export function ProposalCreate() {
   ].filter(Boolean);
 
   const lines = (t) => t.split('\n').map((x) => x.trim()).filter(Boolean);
+  const draftBody = () => ({
+    challengeId, solutionTitle: form.solutionTitle.trim(), problemSolutionFit: form.summary.trim(), technicalApproach: form.technicalApproach.trim(), deploymentPlan: form.deploymentPlan.trim(),
+    implementationTimeline: form.timeline.trim(), pilotCostPaise: Math.round(Number(form.cost || 0) * 100), scaleupCostPaise: Math.round(Number(form.scaleupCost || 0) * 100),
+    evidenceDeployments: lines(form.deployments), certifications: lines(form.certifications), documents: filledLinks.filter((l) => l.label.trim().length >= 2 && /^https:\/\//i.test(l.url.trim())).map((l) => ({ label: l.label.trim(), url: l.url.trim() })),
+  });
+  const saveDraft = () => run(async () => {
+    if (!challengeId) { toast.error('Choose a challenge first.'); return; }
+    try {
+      const { challengeId: _c, ...rest } = draftBody();
+      if (draftId) await platformApi.saveDraft(draftId, rest); else { const r = await platformApi.createDraft(draftBody()); setDraftId(r.id); }
+      toast.success('Draft saved. Only you can see it.'); await fetchLiveData();
+    } catch (e) { toast.error([e.message, ...(e.details && Array.isArray(e.details) ? e.details : [])].join(' ')); }
+  });
   const submit = () => run(async () => {
+    if (draftId) {
+      try { const { challengeId: _c, ...rest } = draftBody(); await platformApi.saveDraft(draftId, rest); await platformApi.submitDraft(draftId); toast.success('Proposal submitted'); await fetchLiveData(); navigate('/startup/proposals'); }
+      catch (e) { toast.error(e.message); }
+      return;
+    }
     await submitProposal({
       challengeId, solutionTitle: form.solutionTitle.trim(), summary: form.summary.trim(), technicalApproach: form.technicalApproach.trim(),
       deploymentPlan: form.deploymentPlan.trim(), timeline: form.timeline.trim(), cost: form.cost, scaleupCost: form.scaleupCost,
@@ -136,7 +166,8 @@ export function ProposalCreate() {
         )}
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.6rem' }}>
+        <button className="btn btn-outline btn-lg" type="button" disabled={busy || !challengeId} onClick={saveDraft}>Save draft</button>
         <button className="btn btn-primary btn-lg" disabled={busy || missing.length > 0 || alreadyBid || !verified} onClick={submit}>
           <Send size={16} /> {busy ? 'Submitting…' : 'Submit proposal'}
         </button>

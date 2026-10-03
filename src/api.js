@@ -82,7 +82,8 @@ export const authApi = {
   accessRequest: () => api.get('/auth/access-request'),
   profileLinks: () => api.get('/auth/profile-links'),
   saveProfileLinks: (links) => api.put('/auth/profile-links', { links }),
-  forgotPassword: (email) => api.post('/auth/forgot-password', { email }),
+  forgotPassword: (email, captchaToken) => api.post('/auth/forgot-password', { email, captchaToken }),
+  signupEmail: (d) => api.post('/auth/signup-email', d),
   resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
   changePassword: (currentPassword, newPassword) => api.post('/auth/change-password', { currentPassword, newPassword }),
 };
@@ -201,4 +202,25 @@ export const managementApi = {
   extendDeadline: (id, deadline, reason) => api.post(`/challenges/${id}/extend-deadline`, { deadline, reason }),
   addAddendum: (id, title, body) => api.post(`/challenges/${id}/addenda`, { title, body }),
   addenda: (id) => api.get(`/challenges/${id}/addenda`),
+};
+
+export const platformApi = {
+  documents: (organizationId) => api.get(`/documents${organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : ''}`),
+  uploadDocument: (docType, filename, contentBase64) => api.post('/documents', { docType, filename, contentBase64 }),
+  documentUrl: (id) => `${API_BASE}/documents/${id}/download`,
+  reviewDocument: (id, status, note) => api.put(`/documents/${id}/review`, { status, note }),
+  startupReview: (id) => api.get(`/admin/startups/${id}/review`),
+  setCheck: (id, key, done, note) => api.put(`/admin/startups/${id}/checklist`, { key, done, note }),
+  reconcile: (rows) => api.post('/finance/reconcile', { rows }),
+  applyReconcile: (items) => api.post('/finance/reconcile/apply', { items }),
+  financeTrends: () => api.get('/finance/trends'),
+  adminTrends: () => api.get('/admin/trends'),
+  questions: (cid) => api.get(`/challenges/${cid}/questions`),
+  ask: (cid, question) => api.post(`/challenges/${cid}/questions`, { question }),
+  answer: (cid, qid, answer) => api.post(`/challenges/${cid}/questions/${qid}/answer`, { answer }),
+  duplicateChallenge: (cid) => api.post(`/challenges/${cid}/duplicate`),
+  createDraft: (d) => api.post('/proposals/drafts', d),
+  saveDraft: (id, d) => api.put(`/proposals/${id}/draft`, d),
+  deleteDraft: (id) => api.del(`/proposals/${id}/draft`),
+  submitDraft: (id) => api.post(`/proposals/${id}/submit`),
 };

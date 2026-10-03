@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth, useApp, useTheme } from '../../store';
 import { authApi } from '../../api';
 import { Logo, ThemeControls } from '../common/ui';
+import { Captcha } from '../common/Captcha';
 import { Lock, Eye, EyeOff, AlertCircle, Info, Loader2, Building2, Rocket, Search, Wallet, TrendingUp, Shield, ArrowLeft, CheckCircle2 } from 'lucide-react';
 
 const ROLES = [
@@ -93,6 +94,8 @@ const REG_FIELDS = [
 ];
 
 function RegisterStartup({ onDone, onCancel }) {
+  const { config } = useAuth();
+  const [captchaTok, setCaptchaTok] = useState(null);
   const [v, setV] = useState({ password: '' });
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -102,7 +105,7 @@ function RegisterStartup({ onDone, onCancel }) {
   const submit = async (e) => {
     e.preventDefault(); setErr(null); setBusy(true);
     try {
-      await authApi.registerStartup({ ...v, pan: (v.pan || '').toUpperCase(), gstin: (v.gstin || '').toUpperCase(), ifscCode: (v.ifscCode || '').toUpperCase(), website: v.website || '' });
+      await authApi.registerStartup({ ...v, pan: (v.pan || '').toUpperCase(), gstin: (v.gstin || '').toUpperCase(), ifscCode: (v.ifscCode || '').toUpperCase(), website: v.website || '', captchaToken: captchaTok });
       setDone(true);
     } catch (ex) {
       const d = ex.details && !Array.isArray(ex.details) && Object.entries(ex.details).filter(([k]) => k !== '_errors').map(([k, x]) => `${k}: ${(x._errors || []).join(', ')}`).join(' • ');
@@ -137,6 +140,7 @@ function RegisterStartup({ onDone, onCancel }) {
           <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? 'Hide password' : 'Show password'}>{show ? <EyeOff size={16} /> : <Eye size={16} />}</button>
         </div>
       </label>
+      {config.turnstileSiteKey && <Captcha onToken={setCaptchaTok} />}
       <div style={{ display: 'flex', gap: 10 }}>
         <button type="button" className="lp-secondary" onClick={onCancel}>Cancel</button>
         <button type="submit" className="lp-primary" disabled={busy} style={{ flex: 1 }}>{busy ? <Loader2 size={16} className="spin" /> : null} Register</button>
@@ -157,6 +161,8 @@ export function LoginPage({ initialRole = null }) {
   const [view, setView] = useState('signin'); // signin | register
   const [hint, setHint] = useState(null);
   const [forgot, setForgot] = useState(null); // null | { sent: bool }
+  const [captcha, setCaptcha] = useState(null);
+  const [emailForm, setEmailForm] = useState(null); // null | { name, email, password, sent }
 
   const step = mfaChallenge ? 'mfa' : role ? 'form' : 'role';
   const info = ROLES.find((r) => r.key === role);
@@ -180,6 +186,7 @@ export function LoginPage({ initialRole = null }) {
   };
   const startSignup = () => {
     if (role === 'startup') { setView('register'); return; }
+    if (config.emailEnabled) { setEmailForm({ name: '', email: '', password: '', sent: false }); return; }
     // Everyone else signs up through Google (which has already verified their email), then answers a few questions.
     setHint(role === 'investor' ? 'To register as an investor, sign in with Google below. We will ask a few quick questions next.' : 'To request access, sign in with Google below. We will ask for your department and designation, and an administrator will approve the request.');
   };
@@ -257,10 +264,11 @@ export function LoginPage({ initialRole = null }) {
                   </div>
                 </label>
                 <button type="submit" className="lp-primary" disabled={busy}>{busy ? <><Loader2 size={16} className="spin" /> Signing in…</> : <><Lock size={15} /> Sign in</>}</button>
+                {config.turnstileSiteKey && config.emailEnabled && !forgot?.sent && <Captcha onToken={setCaptcha} />}
                 {config.emailEnabled ? (
                   forgot?.sent
                     ? <div className="lp-info" role="status"><Info size={16} style={{ flexShrink: 0, marginTop: 2 }} /><span>If that email belongs to an account, a reset link is on its way. It works once and expires in 30 minutes.</span></div>
-                    : <button type="button" className="lp-link" style={{ alignSelf: 'center' }} onClick={async () => { if (!email.trim()) { setLoginError('Type your email above first, then choose "Forgot password?".'); return; } setLoginError(null); await authApi.forgotPassword(email.trim()).catch(() => {}); setForgot({ sent: true }); }}>Forgot password?</button>
+                    : <button type="button" className="lp-link" style={{ alignSelf: 'center' }} onClick={async () => { if (!email.trim()) { setLoginError('Type your email above first, then choose "Forgot password?".'); return; } setLoginError(null); try { await authApi.forgotPassword(email.trim(), captcha); setForgot({ sent: true }); } catch (ex) { setLoginError(ex.message); } }}>Forgot password?</button>
                 ) : <p className="lp-note" style={{ textAlign: 'center' }}>Forgot your password? Ask your administrator to reset it.</p>}
                 <div className="lp-divider"><span>or</span></div>
                 {hint && <div className="lp-info" role="status"><Info size={16} style={{ flexShrink: 0, marginTop: 2 }} /><span>{hint}</span></div>}
@@ -271,6 +279,21 @@ export function LoginPage({ initialRole = null }) {
                     : <button type="button" className="lp-pill gh" disabled title="GitHub sign-in is not set up on this server yet"><GitHubMark /> Sign in with GitHub</button>)}
                 </div>
                 <p className="lp-note">New here? Signing in with Google{role === 'startup' ? ' or GitHub' : ''} creates your account after a few quick questions.</p>
+                {emailForm && (
+                  emailForm.sent
+                    ? <div className="lp-info" role="status"><Info size={16} style={{ flexShrink: 0, marginTop: 2 }} /><span>If that address can be used, we have sent a confirmation link. Open it to continue; it works once and expires in 30 minutes.</span></div>
+                    : (
+                      <div style={{ display: 'grid', gap: 10, padding: 14, border: '1px solid var(--slate-200)', borderRadius: 'var(--radius-md)', background: 'var(--slate-50)' }}>
+                        <strong style={{ fontSize: '.9rem' }}>Create an account with email</strong>
+                        <label className="lp-field">Full name<input value={emailForm.name} onChange={(e) => setEmailForm({ ...emailForm, name: e.target.value })} autoComplete="name" /></label>
+                        <label className="lp-field">Email<input type="email" value={emailForm.email} onChange={(e) => setEmailForm({ ...emailForm, email: e.target.value })} autoComplete="email" /></label>
+                        <label className="lp-field">Password<input type="password" value={emailForm.password} onChange={(e) => setEmailForm({ ...emailForm, password: e.target.value })} autoComplete="new-password" /><small>At least 10 characters with upper and lower case, a number and a symbol.</small></label>
+                        {config.turnstileSiteKey && <Captcha onToken={setCaptcha} />}
+                        <button type="button" className="lp-primary" disabled={busy || emailForm.name.trim().length < 2 || !emailForm.email || !emailForm.password}
+                          onClick={async () => { setBusy(true); setLoginError(null); try { await authApi.signupEmail({ ...emailForm, captchaToken: captcha }); setEmailForm({ ...emailForm, sent: true }); } catch (ex) { setLoginError([ex.message, ...(Array.isArray(ex.details) ? ex.details : [])].join(' • ')); } finally { setBusy(false); } }}>Send confirmation link</button>
+                      </div>
+                    )
+                )}
                 <div className="lp-foot">
                   {su.lead} {su.link && <button type="button" className="lp-link" onClick={startSignup}>{su.link}</button>} {su.tail}
                 </div>

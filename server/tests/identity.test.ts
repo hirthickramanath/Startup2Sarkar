@@ -4,6 +4,7 @@ import { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app';
 import { getDatabase, DatabaseAdapter } from '../src/db';
 import crypto from 'crypto';
+import { generateSync } from 'otplib';
 import { hashPassword, _resetGoogleJwksCache } from '../src/security';
 import { DevelopmentEmailProvider, BrevoEmailProvider } from '../src/adapters';
 
@@ -41,6 +42,7 @@ describe('Identity: sign-in methods, onboarding, approvals and the investor wall
   let db: DatabaseAdapter;
   let gh = fakeGithub({ id: 1, login: 'x', emails: [] });
   const mail = new DevelopmentEmailProvider();
+  let captchaImpl: typeof fetch = (async () => new Response(JSON.stringify({ success: true }), { status: 200 })) as any;
   let adminToken = '';
   const PW = 'Adm1n#Passw0rd!';
 
@@ -87,7 +89,7 @@ describe('Identity: sign-in methods, onboarding, approvals and the investor wall
     process.env.GITHUB_CLIENT_SECRET = 'csecret';
     process.env.GOOGLE_CLIENT_ID = GCLIENT; _resetGoogleJwksCache();
     db = getDatabase();
-    app = await buildApp({ db, emailProvider: mail, jwksFetcher: async () => ({ keys: [GJWK] }), githubFetch: ((u: any, i: any) => (gh.impl as any)(u, i)) as any });
+    app = await buildApp({ db, emailProvider: mail, captchaFetch: ((u: any, i: any) => (captchaImpl as any)(u, i)) as any, jwksFetcher: async () => ({ keys: [GJWK] }), githubFetch: ((u: any, i: any) => (gh.impl as any)(u, i)) as any });
     await db.query(`INSERT INTO departments (id, name, code, ministry, budget_allocated_paise) VALUES ('DEPT-ID','Dept Identity','ID','Min ID',0) ON CONFLICT (id) DO NOTHING`);
     await db.query(`INSERT INTO users (id, email, password_hash, role, name, designation) VALUES ('USR-ADM-ID','admin@id.test',$1,'admin','Admin','Super Admin')`, [await hashPassword(PW)]);
     adminToken = await login('admin@id.test', 'admin');
@@ -470,5 +472,91 @@ describe('Identity: sign-in methods, onboarding, approvals and the investor wall
       await assert.rejects(() => bad.sendEmail({ to: 'a@b.c', subject: 's', text: 't', html: 't' }), /rejected/);
     });
   });
+  });
+
+  describe('Staff two-step verification, CAPTCHA and email sign-up', () => {
+    it('staff cannot reach any data until they turn on two-step verification (production default), but can reach the enrolment endpoints', async () => {
+      await db.query(`INSERT INTO users (id, email, password_hash, role, name, designation, department_id) VALUES ('USR-MFA','mfa.staff@example.com',$1,'finance','Mfa Staff','Officer','DEPT-ID')`, [await hashPassword(PW)]);
+      const t = await login('mfa.staff@example.com', 'finance');
+      assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/finance/budget', headers: bearer(t) })).statusCode, 200, 'not enforced outside production unless asked');
+      process.env.REQUIRE_STAFF_MFA = 'true';
+      try {
+        const blocked = await app.inject({ method: 'GET', url: '/api/v1/finance/budget', headers: bearer(t) });
+        assert.strictEqual(blocked.statusCode, 403); assert.strictEqual(J(blocked).code, 'MFA_ENROLMENT_REQUIRED');
+        assert.strictEqual(J(await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(t) })).user.mfa_enrol_required, true);
+        const setup = J(await app.inject({ method: 'POST', url: '/api/v1/auth/mfa/setup', headers: bearer(t) }));
+        assert.ok(setup.secret && setup.otpauthUrl && setup.recoveryCodes.length === 8);
+        assert.strictEqual((await app.inject({ method: 'POST', url: '/api/v1/auth/mfa/enable', headers: bearer(t), payload: { code: '000000' } })).statusCode, 400);
+        assert.strictEqual((await app.inject({ method: 'POST', url: '/api/v1/auth/mfa/enable', headers: bearer(t), payload: { code: generateSync({ secret: setup.secret }) } })).statusCode, 200);
+        assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/finance/budget', headers: bearer(t) })).statusCode, 200, 'access opens once enrolled');
+        assert.strictEqual(J(await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(t) })).user.mfa_enrol_required, false);
+        // students of the rule: startups and investors are not forced
+        const st = await loginFreshStartup();
+        assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(st) })).statusCode, 200);
+      } finally { delete process.env.REQUIRE_STAFF_MFA; }
+    });
+
+    it('when CAPTCHA is on, sign-up, onboarding, registration and reset all refuse a missing or wrong token, and fail closed if the verifier is down', async () => {
+      process.env.TURNSTILE_SECRET_KEY = 'secret';
+      const seen: string[] = [];
+      captchaImpl = (async (_u: any, init: any) => { seen.push(String(init.body)); return new Response(JSON.stringify({ success: /response=good-token-0123/.test(String(init.body)) }), { status: 200 }); }) as any;
+      try {
+        const attempts = [
+          ['/api/v1/auth/forgot-password', { email: 'reset@example.com' }],
+          ['/api/v1/auth/signup-email', { email: 'cap@example.com', name: 'Cap Person', password: 'Str0ng#Passw0rd!' }],
+          ['/api/v1/auth/register-startup', {}],
+        ] as const;
+        for (const [url, body] of attempts) {
+          const none = await app.inject({ method: 'POST', url, payload: body });
+          assert.strictEqual(none.statusCode, 400, url); assert.strictEqual(J(none).code, 'CAPTCHA_FAILED');
+          const bad = await app.inject({ method: 'POST', url, payload: { ...body, captchaToken: 'wrong-token-0123456' } });
+          assert.strictEqual(J(bad).code, 'CAPTCHA_FAILED');
+        }
+        const ok = await app.inject({ method: 'POST', url: '/api/v1/auth/forgot-password', payload: { email: 'reset@example.com', captchaToken: 'good-token-0123' } });
+        assert.strictEqual(ok.statusCode, 200);
+        assert.ok(seen.some((b) => b.includes('secret=secret')), 'the secret key is sent to Cloudflare');
+        captchaImpl = (async () => { throw new Error('network down'); }) as any;
+        assert.strictEqual(J(await app.inject({ method: 'POST', url: '/api/v1/auth/forgot-password', payload: { email: 'reset@example.com', captchaToken: 'good-token-0123' } })).code, 'CAPTCHA_FAILED', 'fails closed');
+        const cfg = J(await app.inject({ method: 'GET', url: '/api/v1/public/config' }));
+        assert.ok('turnstileSiteKey' in cfg);
+      } finally { delete process.env.TURNSTILE_SECRET_KEY; captchaImpl = (async () => new Response(JSON.stringify({ success: true }), { status: 200 })) as any; }
+    });
+
+    it('email sign-up: confirm the address, answer the questions, then sign in with the password (investor and staff roles)', async () => {
+      const before = mail.getSentEmails().length;
+      const weak = await app.inject({ method: 'POST', url: '/api/v1/auth/signup-email', payload: { email: 'inv.email@example.com', name: 'Email Investor', password: 'password' } });
+      assert.strictEqual(weak.statusCode, 400); assert.strictEqual(J(weak).code, 'WEAK_PASSWORD');
+      const first = await app.inject({ method: 'POST', url: '/api/v1/auth/signup-email', payload: { email: 'inv.email@example.com', name: 'Email Investor', password: 'Str0ng#Passw0rd!' } });
+      const existing = await app.inject({ method: 'POST', url: '/api/v1/auth/signup-email', payload: { email: 'reset@example.com', name: 'Someone', password: 'Str0ng#Passw0rd!' } });
+      assert.deepStrictEqual(J(first), J(existing), 'no way to tell a new address from an existing account');
+      assert.strictEqual(mail.getSentEmails().length, before + 1, 'only the new address was emailed');
+      const m = mail.getSentEmails().find((e) => e.to === 'inv.email@example.com')!;
+      const token = /token=([0-9a-f]{64})/.exec(m.text)![1];
+      assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/auth/verify-email?token=' + 'f'.repeat(64) })).headers.location, '/login?error=verify_failed');
+      const verified = await app.inject({ method: 'GET', url: '/api/v1/auth/verify-email?token=' + token });
+      assert.strictEqual(verified.headers.location, '/signup');
+      const cookie = cookiesOf(verified).s2s_signup;
+      assert.strictEqual(J(await app.inject({ method: 'GET', url: '/api/v1/auth/onboarding', cookies: { s2s_signup: cookie } })).provider, 'email');
+      assert.strictEqual((await onboard(cookie, { ...base, role: 'admin', name: 'Mallory' })).statusCode, 400, 'never as an administrator');
+      const done = await onboard(cookie, { ...base, role: 'investor', name: 'Email Investor', investorType: 'ANGEL', organisation: 'Angel Co' });
+      assert.strictEqual(done.statusCode, 201, done.body);
+      assert.strictEqual(Number((await db.query(`SELECT COUNT(*) c FROM pending_signups WHERE LOWER(email) = 'inv.email@example.com'`)).rows[0].c), 0, 'the pending record is gone once the account exists');
+      const login1 = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: 'inv.email@example.com', password: 'Str0ng#Passw0rd!', role: 'investor' } });
+      assert.strictEqual(login1.statusCode, 200, login1.body);
+      // staff by email wait for approval too
+      await app.inject({ method: 'POST', url: '/api/v1/auth/signup-email', payload: { email: 'staff.email@example.com', name: 'Email Staff', password: 'Str0ng#Passw0rd!' } });
+      const t2 = /token=([0-9a-f]{64})/.exec(mail.getSentEmails().find((e) => e.to === 'staff.email@example.com')!.text)![1];
+      const c2 = cookiesOf(await app.inject({ method: 'GET', url: '/api/v1/auth/verify-email?token=' + t2 })).s2s_signup;
+      const staff = await onboard(c2, { ...base, role: 'finance', name: 'Email Staff', departmentId: 'DEPT-ID', designation: 'Accounts Officer', officialEmail: 'staff@dept.gov.in', reason: 'I process payments for this department.' });
+      assert.strictEqual(J(staff).user.status, 'PENDING_APPROVAL');
+      assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/finance/budget', headers: bearer(J(staff).token) })).statusCode, 403);
+    });
+
+    it('a confirmation link works once, and expires', async () => {
+      await app.inject({ method: 'POST', url: '/api/v1/auth/signup-email', payload: { email: 'once@example.com', name: 'Once Only', password: 'Str0ng#Passw0rd!' } });
+      const token = /token=([0-9a-f]{64})/.exec(mail.getSentEmails().filter((e) => e.to === 'once@example.com').pop()!.text)![1];
+      await db.query(`UPDATE pending_signups SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 minute' WHERE LOWER(email) = 'once@example.com'`);
+      assert.strictEqual((await app.inject({ method: 'GET', url: '/api/v1/auth/verify-email?token=' + token })).headers.location, '/login?error=verify_failed');
+    });
   });
 });

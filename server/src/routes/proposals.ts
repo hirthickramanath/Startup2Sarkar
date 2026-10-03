@@ -153,6 +153,9 @@ export async function proposalRoutes(
       params.push(authReq.user.departmentId);
     }
 
+    // Drafts are private to the startup that wrote them; withdrawn proposals stay visible with that status
+    if (authReq.user.role !== 'startup') conditions.push(`p.status <> 'DRAFT'`);
+
     if (challengeId) {
       conditions.push(`p.challenge_id = $${params.length + 1}`);
       params.push(challengeId);
@@ -210,6 +213,7 @@ export async function proposalRoutes(
       return reply.status(404).send({ error: 'Proposal not found' });
     }
     const proposal = propRes.rows[0];
+    if (proposal && ['DRAFT', 'WITHDRAWN'].includes(proposal.status)) return reply.status(409).send({ error: `A proposal in status '${proposal.status}' cannot be evaluated.` });
     const chRes = await db.query('SELECT * FROM challenges WHERE id = $1', [proposal.challenge_id]);
     // The evaluator needs the FULL challenge (budget, KPIs, duration, capabilities), not a trimmed copy
     const challenge = chRes.rows[0];
@@ -301,6 +305,87 @@ export async function proposalRoutes(
   });
 
   // 4. Human Startup Selection for Pilot Execution (Spec Section 12)
+  // ───────────── Drafts: save work in progress, submit when ready ─────────────
+  const linkSchema = z.object({ label: z.string().trim().min(2).max(80), url: z.string().trim().url().max(300).refine((u) => /^https:\/\//i.test(u), 'Links must start with https://') });
+  const draftSchema = z.object({
+    challengeId: z.string().min(3).max(60),
+    solutionTitle: z.string().max(200).default(''), problemSolutionFit: z.string().max(5000).default(''), technicalApproach: z.string().max(5000).default(''),
+    deploymentPlan: z.string().max(3000).default(''), implementationTimeline: z.string().max(300).default(''),
+    pilotCostPaise: z.number().int().min(0).default(0), scaleupCostPaise: z.number().int().min(0).default(0),
+    evidenceDeployments: z.array(z.any()).max(50).default([]), certifications: z.array(z.any()).max(50).default([]),
+    documents: z.array(linkSchema).max(3).default([])
+  });
+
+  app.post('/drafts', { preHandler: [authenticate, requireRole('startup')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = draftSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Validation failed', details: parsed.error.format() });
+    const d = parsed.data;
+    const org = (await db.query('SELECT id, name FROM organizations WHERE id = $1', [authReq.user.organizationId])).rows[0];
+    if (!org) return reply.status(403).send({ error: 'No startup is linked to this account.' });
+    const ch = (await db.query('SELECT id, status FROM challenges WHERE id = $1', [d.challengeId])).rows[0];
+    if (!ch || !['PUBLISHED', 'PROPOSALS_RECEIVED'].includes(ch.status)) return reply.status(404).send({ error: 'Challenge not found or not open' });
+    const count = await db.query(`SELECT COUNT(*) AS c FROM proposals WHERE organization_id = $1 AND status = 'DRAFT'`, [org.id]);
+    if (Number(count.rows[0].c) >= 10) return reply.status(409).send({ error: 'You can keep up to 10 drafts. Delete or submit one first.' });
+    const id = `DRAFT-${Date.now().toString().slice(-8)}${Math.floor(Math.random() * 90 + 10)}`;
+    await db.query(
+      `INSERT INTO proposals (id, challenge_id, organization_id, startup_name, solution_title, problem_solution_fit, technical_approach, deployment_plan, implementation_timeline, pilot_cost_paise, scaleup_cost_paise, evidence_deployments, certifications, documents, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'DRAFT')`,
+      [id, d.challengeId, org.id, org.name, d.solutionTitle, d.problemSolutionFit, d.technicalApproach, d.deploymentPlan, d.implementationTimeline, d.pilotCostPaise, d.scaleupCostPaise, JSON.stringify(d.evidenceDeployments), JSON.stringify(d.certifications), JSON.stringify(d.documents)]
+    );
+    return reply.status(201).send({ success: true, id });
+  });
+
+  app.put('/:id/draft', { preHandler: [authenticate, requireRole('startup')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const { id } = request.params as { id: string };
+    const parsed = draftSchema.omit({ challengeId: true }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Validation failed', details: parsed.error.format() });
+    const d = parsed.data;
+    const row = (await db.query('SELECT id, status, organization_id FROM proposals WHERE id = $1', [id])).rows[0];
+    if (!row || row.organization_id !== authReq.user.organizationId) return reply.status(404).send({ error: 'Draft not found' });
+    if (row.status !== 'DRAFT') return reply.status(409).send({ error: 'Only a draft can be edited.' });
+    await db.query(
+      `UPDATE proposals SET solution_title=$1, problem_solution_fit=$2, technical_approach=$3, deployment_plan=$4, implementation_timeline=$5, pilot_cost_paise=$6, scaleup_cost_paise=$7, evidence_deployments=$8, certifications=$9, documents=$10, updated_at=CURRENT_TIMESTAMP WHERE id=$11`,
+      [d.solutionTitle, d.problemSolutionFit, d.technicalApproach, d.deploymentPlan, d.implementationTimeline, d.pilotCostPaise, d.scaleupCostPaise, JSON.stringify(d.evidenceDeployments), JSON.stringify(d.certifications), JSON.stringify(d.documents), id]
+    );
+    return reply.send({ success: true });
+  });
+
+  app.delete('/:id/draft', { preHandler: [authenticate, requireRole('startup')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const { id } = request.params as { id: string };
+    const row = (await db.query('SELECT id, status, organization_id FROM proposals WHERE id = $1', [id])).rows[0];
+    if (!row || row.organization_id !== authReq.user.organizationId) return reply.status(404).send({ error: 'Draft not found' });
+    if (row.status !== 'DRAFT') return reply.status(409).send({ error: 'Only a draft can be deleted. Submitted proposals can be withdrawn instead.' });
+    await db.query('DELETE FROM proposals WHERE id = $1', [id]);
+    return reply.send({ success: true });
+  });
+
+  app.post('/:id/submit', { preHandler: [authenticate, requireRole('startup')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const { id } = request.params as { id: string };
+    const row = (await db.query('SELECT * FROM proposals WHERE id = $1', [id])).rows[0];
+    if (!row || row.organization_id !== authReq.user.organizationId) return reply.status(404).send({ error: 'Draft not found' });
+    if (row.status !== 'DRAFT') return reply.status(409).send({ error: 'Only a draft can be submitted.' });
+    const arr = (v: any) => (typeof v === 'string' ? JSON.parse(v) : v) ?? [];
+    const full = submitProposalSchema.safeParse({
+      challengeId: row.challenge_id, solutionTitle: row.solution_title, problemSolutionFit: row.problem_solution_fit, technicalApproach: row.technical_approach,
+      deploymentPlan: row.deployment_plan, implementationTimeline: row.implementation_timeline, pilotCostPaise: Number(row.pilot_cost_paise), scaleupCostPaise: Number(row.scaleup_cost_paise),
+      evidenceDeployments: arr(row.evidence_deployments), certifications: arr(row.certifications), documents: arr(row.documents)
+    });
+    if (!full.success) return reply.status(400).send({ error: 'The draft is not complete yet.', details: full.error.format() });
+    const org = (await db.query('SELECT verification_status FROM organizations WHERE id = $1', [authReq.user.organizationId])).rows[0];
+    if (!org || org.verification_status !== 'VERIFIED') return reply.status(403).send({ error: 'Your startup must be verified by an administrator before proposals can be submitted. Your draft is safe.', code: 'ORG_NOT_VERIFIED' });
+    const ch = (await db.query('SELECT status, deadline FROM challenges WHERE id = $1', [row.challenge_id])).rows[0];
+    if (!ch || !['PUBLISHED', 'PROPOSALS_RECEIVED'].includes(ch.status)) return reply.status(400).send({ error: 'This challenge is no longer open for proposals.' });
+    if (new Date(ch.deadline) < new Date()) return reply.status(400).send({ error: 'The deadline for this challenge has passed.' });
+    await db.query(`UPDATE proposals SET status = 'SUBMITTED', submitted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+    if (ch.status === 'PUBLISHED') await db.query(`UPDATE challenges SET status = 'PROPOSALS_RECEIVED' WHERE id = $1`, [row.challenge_id]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'startup', action: 'PROPOSAL_SUBMITTED', entityType: 'PROPOSAL', entityId: id, details: { challengeId: row.challenge_id, fromDraft: true }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true, proposalId: id });
+  });
+
   // A startup can withdraw its own proposal until it is selected
   app.post('/:id/withdraw', { preHandler: [authenticate, requireRole('startup')] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
@@ -309,6 +394,7 @@ export async function proposalRoutes(
     if (!p || p.organization_id !== authReq.user.organizationId) return reply.status(404).send({ error: 'Proposal not found' });
     if (!['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'AI_EVALUATED', 'SHORTLISTED', 'NOT_SHORTLISTED'].includes(p.status)) return reply.status(409).send({ error: `A proposal in status '${p.status}' cannot be withdrawn.` });
     await db.query(`UPDATE proposals SET status = 'WITHDRAWN', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+    await db.query('DELETE FROM ai_evaluations WHERE proposal_id = $1', [id]); // a withdrawn proposal leaves the ranking
     await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'startup', action: 'PROPOSAL_WITHDRAWN', entityType: 'PROPOSAL', entityId: id, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
     return reply.send({ success: true });
   });

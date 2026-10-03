@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { StatusBadge } from '../../common/ui';
 import { ChallengeActions } from '../../common/Management';
+import { ChallengeQA, DuplicateChallenge } from '../../common/Platform';
 
 export function ChallengeDetail({ challengeId }) {
   const { state, navigate, evaluateProposalsAI, closeChallenge } = useApp();
@@ -243,6 +244,8 @@ export function ChallengeDetail({ challengeId }) {
         </div>
       </div>
       <ChallengeActions challenge={challenge} />
+      <ChallengeQA challengeId={challenge.id} role="government" />
+      <div><DuplicateChallenge challengeId={challenge.id} /></div>
     </div>
   );
 }

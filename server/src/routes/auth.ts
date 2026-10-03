@@ -3,7 +3,8 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import { DatabaseAdapter } from '../db';
 import { AuditService } from '../audit';
-import { hashPassword, verifyPassword, validatePasswordStrength, generateMfaSecret, verifyTotpToken, generateRecoveryCodes, verifyRecoveryCode, signToken, verifyToken, isValidPan, isValidGstin, isValidCinOrLlpin, isValidDpiitNumber, isValidIfsc, encryptField, maskBankAccount, maskPan, sha256, AuthenticatedRequest, createAuthMiddleware, requireRole } from '../security';
+import { verifyCaptcha } from '../captcha';
+import { hashPassword, verifyPassword, validatePasswordStrength, generateMfaSecret, verifyTotpToken, generateRecoveryCodes, verifyRecoveryCode, signToken, verifyToken, isValidPan, isValidGstin, isValidCinOrLlpin, isValidDpiitNumber, isValidIfsc, encryptField, maskBankAccount, maskPan, sha256, AuthenticatedRequest, createAuthMiddleware, requireRole, staffMfaRequired, STAFF_ROLES } from '../security';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -28,7 +29,7 @@ const registerStartupSchema = z.object({
   ifscCode: z.string().length(11)
 });
 
-export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapter; auditService: AuditService }) {
+export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapter; auditService: AuditService; captchaFetch?: typeof fetch }) {
   const { db, auditService } = opts;
   const AUTH_RATE = { config: { rateLimit: { max: parseInt(process.env.AUTH_RATE_MAX || '10', 10), timeWindow: '1 minute' } } };
 
@@ -213,7 +214,8 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
         organizationId: user.organization_id,
         mfaEnabled: user.mfa_enabled,
         mustChangePassword: user.must_change_password,
-        mfaEnrollmentRequired: PRIVILEGED.includes(user.role) && !user.mfa_enabled
+        mfaEnrollmentRequired: PRIVILEGED.includes(user.role) && !user.mfa_enabled,
+        mfaEnrolRequired: staffMfaRequired() && STAFF_ROLES.includes(user.role) && !user.mfa_enabled
       },
       token
     });
@@ -359,6 +361,9 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
 
   // 5. Public Startup Self-Registration with Statutory Checksum Verification
   app.post('/register-startup', { config: { rateLimit: { max: 5, timeWindow: '10 minutes' } } }, async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!(await verifyCaptcha((request.body as any)?.captchaToken, request.ip || '', opts.captchaFetch))) {
+      return reply.status(400).send({ error: 'Please complete the human check and try again.', code: 'CAPTCHA_FAILED' });
+    }
     const parseResult = registerStartupSchema.safeParse(request.body);
     if (!parseResult.success) {
       return reply.status(400).send({ error: 'Validation failed', details: parseResult.error.format() });
@@ -489,7 +494,8 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
       return reply.status(404).send({ error: 'User not found' });
     }
 
-    return reply.send({ user: res.rows[0] });
+    const u = res.rows[0];
+    return reply.send({ user: { ...u, mfa_enrol_required: staffMfaRequired() && STAFF_ROLES.includes(u.role) && !u.mfa_enabled } });
   });
 
   // 7. Logout Endpoint

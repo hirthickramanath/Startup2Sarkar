@@ -2,6 +2,7 @@ import React from 'react';
 import { useApp } from '../../../store';
 import { Bot, Wallet, Clock, AlertTriangle, PauseCircle } from 'lucide-react';
 import { StatusBadge, DataTable, PageHeader, EmptyState, inr, inrPaise } from '../../common/ui';
+import { FinanceTrends } from '../../common/Platform';
 
 const Stat = ({ icon: Icon, label, value, sub, color = '#2563eb', onClick }) => (
   <div className="card" onClick={onClick} style={{ cursor: onClick ? 'pointer' : 'default', display: 'flex', gap: '.75rem', alignItems: 'center' }}>
@@ -50,6 +51,7 @@ export function FinanceDashboard() {
           ? <EmptyState title="Nothing waiting">New claims from startups appear here for review.</EmptyState>
           : <DataTable columns={columns} data={[...pending, ...approved]} searchable={false} onRowClick={(r) => navigate(`/finance/payments/${r.id}`)} />}
       </div>
+      <FinanceTrends />
     </div>
   );
 }

@@ -30,10 +30,11 @@
     "lucide-react": "^1.49.0",
     "otplib": "^13.5.0",
     "pg": "^8.23.0",
+    "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "zod": "^4.6.5",
-    "tsx": "^4.23.15"
+    "tsx": "^4.23.15",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
@@ -48,5 +49,5 @@
   "engines": {
     "node": ">=20"
   },
-  "description": "Startup2Sarkar \u2014 outcome-based innovation procurement platform (challenges \u2192 proposals \u2192 pilots \u2192 verified milestone payments)"
+  "description": "Startup2Sarkar — outcome-based innovation procurement platform (challenges → proposals → pilots → verified milestone payments)"
 }

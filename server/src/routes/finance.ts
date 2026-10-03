@@ -837,4 +837,80 @@ export async function financeRoutes(
     reply.header('Content-Type', 'text/csv; charset=utf-8').header('Content-Disposition', 'attachment; filename="tax-ledger.csv"');
     return reply.send(lines.join('\n'));
   });
+  // ───────────── Bank statement reconciliation ─────────────
+  const stmtRow = z.object({ date: isoDay, description: z.string().max(300).default(''), reference: z.string().max(100).default(''), debitPaise: z.number().int().min(0).max(100000000000) });
+  const tokenIn = (text: string, token: string) => new RegExp(`(^|[^0-9A-Za-z])0*${token.replace(/[^0-9A-Za-z]/g, '')}([^0-9A-Za-z]|$)`, 'i').test(text);
+
+  app.post('/reconcile', { preHandler: [authenticate, requireRole('finance', 'admin')], bodyLimit: 2 * 1024 * 1024 }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const parsed = z.object({ rows: z.array(stmtRow).min(1).max(1000) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Send between 1 and 1000 statement lines with a date (YYYY-MM-DD) and a debit amount.' });
+    const cheques = (await db.query(`SELECT c.id, c.cheque_number, c.cheque_day, c.net_payable_paise, o.name AS startup_name FROM (SELECT *, to_char(cheque_date, 'YYYY-MM-DD') AS cheque_day FROM finance_payment_claims) c JOIN organizations o ON o.id = c.organization_id WHERE c.status = 'CHEQUE_ISSUED'`)).rows;
+    const transfers = (await db.query(`SELECT c.id, c.disbursement_reference, c.net_payable_paise, o.name AS startup_name FROM finance_payment_claims c JOIN organizations o ON o.id = c.organization_id WHERE c.status = 'PAID' AND c.payment_method = 'ELECTRONIC' AND c.bank_confirmed_at IS NULL AND c.disbursement_reference IS NOT NULL`)).rows;
+    const matches: any[] = []; const mismatches: any[] = []; const unmatched: number[] = [];
+    parsed.data.rows.forEach((row, i) => {
+      if (row.debitPaise <= 0) return; // credits and zero lines are not payments we made
+      const text = `${row.description} ${row.reference}`;
+      let hit = false;
+      for (const c of cheques) {
+        if (c.cheque_number && tokenIn(text, c.cheque_number)) {
+          hit = true;
+          const item = { rowIndex: i, claimId: c.id, kind: 'CHEQUE_CLEARED', startupName: c.startup_name, reference: c.cheque_number, expectedPaise: String(c.net_payable_paise), statementPaise: String(row.debitPaise), date: row.date };
+          if (BigInt(c.net_payable_paise) === BigInt(row.debitPaise) && (!c.cheque_day || row.date >= c.cheque_day)) matches.push(item);
+          else mismatches.push({ ...item, reason: BigInt(c.net_payable_paise) !== BigInt(row.debitPaise) ? 'AMOUNT_DIFFERS' : 'BEFORE_CHEQUE_DATE' });
+        }
+      }
+      for (const t of transfers) {
+        if (t.disbursement_reference && tokenIn(text, t.disbursement_reference)) {
+          hit = true;
+          const item = { rowIndex: i, claimId: t.id, kind: 'TRANSFER_CONFIRMED', startupName: t.startup_name, reference: t.disbursement_reference, expectedPaise: String(t.net_payable_paise), statementPaise: String(row.debitPaise), date: row.date };
+          if (BigInt(t.net_payable_paise) === BigInt(row.debitPaise)) matches.push(item); else mismatches.push({ ...item, reason: 'AMOUNT_DIFFERS' });
+        }
+      }
+      if (!hit) unmatched.push(i);
+    });
+    return reply.send({ matches, mismatches, unmatched, openCheques: cheques.length });
+  });
+
+  app.post('/reconcile/apply', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ items: z.array(z.object({ claimId: z.string(), kind: z.enum(['CHEQUE_CLEARED', 'TRANSFER_CONFIRMED']), date: isoDay })).min(1).max(200) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Nothing to apply.' });
+    const results: any[] = [];
+    for (const it of parsed.data.items) {
+      try {
+        const claim = await loadForPayment(it.claimId);
+        if (!claim) { results.push({ claimId: it.claimId, ok: false, error: 'Claim not found' }); continue; }
+        if (it.date > today()) { results.push({ claimId: it.claimId, ok: false, error: 'The date is in the future' }); continue; }
+        if (it.kind === 'CHEQUE_CLEARED') {
+          if (claim.status !== 'CHEQUE_ISSUED') { results.push({ claimId: it.claimId, ok: false, error: `Not an issued cheque (status ${claim.status})` }); continue; }
+          if (claim.cheque_day && it.date < claim.cheque_day) { results.push({ claimId: it.claimId, ok: false, error: 'Statement date is before the cheque date' }); continue; }
+          const entry = { event: 'CLEARED', number: claim.cheque_number, bank: claim.drawee_bank, bankKey: String(claim.drawee_bank).toLowerCase(), date: it.date, via: 'BANK_STATEMENT', at: new Date().toISOString(), by: authReq.user.userId };
+          await db.transaction(async (tx) => {
+            await markPaid(tx, claim, `CHQ-${claim.cheque_number}`, `${it.date}T12:00:00Z`, authReq.user.userId, 'CHEQUE');
+            await tx.query(`UPDATE finance_payment_claims SET cheque_history = cheque_history || $1::jsonb, bank_confirmed_at = $2 WHERE id = $3`, [JSON.stringify([entry]), `${it.date}T12:00:00Z`, it.claimId]);
+          });
+          await notifyStartup(claim.organization_id, 'Payment cleared', `Your cheque for claim ${claim.invoice_number} has cleared.`);
+          await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'CHEQUE_CLEARED', entityType: 'PAYMENT_CLAIM', entityId: it.claimId, details: { via: 'BANK_STATEMENT', clearedDate: it.date }, ...meta(request) });
+        } else {
+          if (claim.status !== 'PAID' || claim.bank_confirmed_at) { results.push({ claimId: it.claimId, ok: false, error: 'Not an unconfirmed electronic payment' }); continue; }
+          await db.query('UPDATE finance_payment_claims SET bank_confirmed_at = $1 WHERE id = $2', [`${it.date}T12:00:00Z`, it.claimId]);
+          await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'TRANSFER_CONFIRMED_BY_STATEMENT', entityType: 'PAYMENT_CLAIM', entityId: it.claimId, details: { date: it.date }, ...meta(request) });
+        }
+        results.push({ claimId: it.claimId, ok: true });
+      } catch (e: any) { results.push({ claimId: it.claimId, ok: false, error: 'Could not be applied' }); }
+    }
+    return reply.send({ results, applied: results.filter((r) => r.ok).length });
+  });
+
+  // ───────────── Monthly trends (last 6 months) ─────────────
+  app.get('/trends', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (_request: FastifyRequest, reply: FastifyReply) => {
+    const rows = (await db.query(
+      `SELECT to_char(created_at, 'YYYY-MM') AS m, COUNT(*) AS submitted, COALESCE(SUM(gross_amount_paise), 0) AS gross,
+              COALESCE(SUM(CASE WHEN status = 'PAID' THEN net_payable_paise ELSE 0 END), 0) AS paid_net
+       FROM finance_payment_claims WHERE created_at >= date_trunc('month', CURRENT_TIMESTAMP) - INTERVAL '5 months' GROUP BY 1`
+    )).rows;
+    const months: string[] = [];
+    for (let i = 5; i >= 0; i--) { const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - i); months.push(d.toISOString().slice(0, 7)); }
+    return reply.send({ months: months.map((m) => { const r = rows.find((x: any) => x.m === m); return { month: m, claims: r ? Number(r.submitted) : 0, grossPaise: r ? String(r.gross) : '0', paidNetPaise: r ? String(r.paid_net) : '0' }; }) });
+  });
 }

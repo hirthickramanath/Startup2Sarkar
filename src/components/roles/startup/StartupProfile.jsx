@@ -4,6 +4,7 @@ import { authApi, networkApi } from '../../../api';
 import { ShieldCheck, Clock, XCircle } from 'lucide-react';
 import { LinkedAccounts, ProfileLinks, cardStyle } from '../../common/Profile';
 import { PageHeader, useBusy } from '../../common/ui';
+import { DocumentsPanel } from '../../common/Platform';
 
 const STATUS = {
   VERIFIED: { cls: 'badge-success', icon: ShieldCheck, text: 'Verified by the platform administrator' },
@@ -129,6 +130,7 @@ export function StartupProfile() {
         </div>
       </section>
       <RegistrationForm s={s} />
+      <DocumentsPanel />
       <LinkedAccounts />
       <ProfileLinks />
       <InvestorVisibility s={s} />

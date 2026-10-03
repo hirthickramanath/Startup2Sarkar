@@ -4,9 +4,12 @@ import { authApi } from './api';
 import { LoginPage } from './components/auth/LoginPage';
 import { Onboarding, AccessPending } from './components/auth/Onboarding';
 import { ResetPassword } from './components/auth/ResetPassword';
+import { MfaEnrol } from './components/auth/MfaEnrol';
 import { AccountSecurity } from './components/common/AccountSecurity';
 import { InvestorDashboard, InvestorStartups, InvestorIntros, InvestorProfile } from './components/roles/investor/Investor';
 import { FinanceTaxLedger } from './components/roles/finance/FinanceTaxLedger';
+import { FinanceReconcile } from './components/roles/finance/FinanceReconcile';
+import { AdminStartups } from './components/roles/admin/AdminStartups';
 import { AdminAccessRequests } from './components/roles/admin/AdminAccess';
 import { AppShell } from './components/common/AppShell';
 import { ToastHost, useBusy } from './components/common/ui';
@@ -81,6 +84,7 @@ const ROUTES = [
   ['/finance/payments/:id', 'Payment claim', ({ id }) => <FinancePaymentDetail paymentId={id} />],
   ['/finance/payments', 'Payment claims', () => <FinancePaymentsList />],
   ['/finance/tax-ledger', 'Tax ledger', () => <FinanceTaxLedger />],
+  ['/finance/reconcile', 'Bank reconciliation', () => <FinanceReconcile />],
   ['/finance/anomalies', 'Anomalies', () => <FinanceAnomalies />],
   ['/finance/stalled', 'Stalled pilots', () => <FinanceStalledPilots />],
   ['/finance/reports', 'Case files', () => <FinanceReports />],
@@ -92,6 +96,7 @@ const ROUTES = [
   ['/investor/profile', 'Investor profile', () => <InvestorProfile />],
 
   ['/admin/dashboard', 'Platform operations', () => <AdminDashboard />],
+  ['/admin/startups', 'Startup verification', () => <AdminStartups />],
   ['/admin/access-requests', 'Access requests', () => <AdminAccessRequests />],
   ['/admin/users', 'User directory', () => <AdminUsers />],
   ['/admin/departments', 'Departments', () => <AdminDepartments />],
@@ -193,6 +198,7 @@ export default function App() {
     return <><LoginPage initialRole={m ? m[1] : null} /><ToastHost /></>;
   }
   if (user.status && user.status !== 'ACTIVE') return <><AccessPending /><ToastHost /></>;
+  if (user.mfaEnrolRequired) return <><MfaEnrol /><ToastHost /></>;
   if (user.mustChangePassword) return <><ForcePasswordChange /><ToastHost /></>;
   if (currentRoute === '/' || currentRoute.startsWith('/login') || currentRoute === '/signup') return null;
 

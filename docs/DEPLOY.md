@@ -16,6 +16,14 @@ The app creates all tables itself on first start (idempotent migrations). Never 
 Google Cloud Console → APIs & Services → Credentials → OAuth client ID (Web application).
 **Authorized JavaScript origins**: your exact site URL, `https://…`, no trailing slash (add `http://localhost:3001` for local tests). No redirect URIs are needed. Publish the consent screen so users beyond test users can sign in. Set the Client ID as `GOOGLE_CLIENT_ID`.
 
+## 2c. Human check (optional): Cloudflare Turnstile
+
+Create a free Turnstile widget in the Cloudflare dashboard (Turnstile → Add widget), add your site's hostname, and copy the **site key** and **secret key**. Set `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`. Sign-up, onboarding, startup registration and "forgot password" then require the check and refuse anything without it.
+
+## 2d. Document storage (recommended): Supabase Storage
+
+In Supabase open **Storage → New bucket**, name it `documents` and keep it **private**. Under **Project Settings → API** copy the project URL and the `service_role` key. Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` (and `SUPABASE_BUCKET` if you used another name). The service key can read everything in the project, so it belongs only in the host's environment settings. Without these, uploaded PDFs go to local disk and disappear on redeploy unless `UPLOAD_DIR` is a mounted volume.
+
 ## 2a. Email (optional): forgot-password and decision emails
 
 Create a Brevo account (brevo.com), verify a sender address (best: an address on a domain you own, with the SPF and DKIM records Brevo shows you), and create an API key. Set `BREVO_API_KEY` and `EMAIL_FROM` (the verified sender) on the host. Once both are set the sign-in page shows **Forgot password?** and people are emailed when an administrator approves or rejects their access or verifies an investor. Check Brevo's current free-plan daily limit on its pricing page. Reset links work once and expire after 30 minutes. If email is not configured, staff can still ask an administrator to reset their password.
@@ -52,6 +60,10 @@ After deploy: open `/health` (should say UP), add the site URL to Google's autho
 ## 3b. Upgrading an existing deployment
 
 New releases add database tables and columns automatically on start (migrations `002`-`005`, all idempotent). Watch the first deploy's log for any migration error. Back up the database before upgrading a deployment that holds real data.
+
+## 3c. Two-step verification for staff
+
+In production every government, finance, inspector and admin account must turn on two-step verification before it can reach any data; the first administrator is asked on first sign-in. Keep the recovery codes somewhere safe.
 
 ## 4. After it is live
 

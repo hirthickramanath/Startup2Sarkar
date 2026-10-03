@@ -4,10 +4,11 @@ import { z } from 'zod';
 import { DatabaseAdapter } from '../db';
 import { AuditService } from '../audit';
 import { EmailProvider } from '../adapters';
+import { verifyCaptcha } from '../captcha';
 import {
   AuthenticatedRequest, JwksFetcher, RoleName, createAuthMiddleware, encryptField, hashPassword, isValidCinOrLlpin,
   isValidDpiitNumber, isValidGstin, isValidIfsc, isValidPan, maskBankAccount, maskPan, signBlob, signToken,
-  validatePasswordStrength, verifyBlob, verifyGoogleIdToken
+  validatePasswordStrength, verifyBlob, verifyGoogleIdToken, staffMfaRequired, STAFF_ROLES
 } from '../security';
 
 /**
@@ -28,6 +29,7 @@ export interface IdentityOptions {
   /** Test hook: replace the network client used to talk to GitHub */
   githubFetch?: typeof fetch;
   emailProvider: EmailProvider;
+  captchaFetch?: typeof fetch;
 }
 
 type Provider = 'google' | 'github';
@@ -94,6 +96,8 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
   const { db, auditService } = opts;
   const authenticate = createAuthMiddleware(db);
   const ghFetch = opts.githubFetch ?? fetch;
+  // Strict per-route limits for the abuse-prone endpoints; the test suite raises AUTH_RATE_MAX, which relaxes them too
+  const strict = (n: number, window: string) => ({ config: { rateLimit: { max: parseInt(process.env.AUTH_RATE_MAX || '0', 10) >= 100 ? 1000 : n, timeWindow: window } } });
   const AUTH_RATE = { config: { rateLimit: { max: parseInt(process.env.AUTH_RATE_MAX || '10', 10), timeWindow: '1 minute' } } };
 
   const meta = (request: FastifyRequest) => ({
@@ -106,7 +110,8 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
   const userView = (u: any) => ({
     id: u.id, name: u.name, email: u.email, role: u.role, status: u.status, designation: u.designation,
     departmentId: u.department_id, organizationId: u.organization_id, mfaEnabled: u.mfa_enabled,
-    mustChangePassword: false, mfaEnrollmentRequired: PRIVILEGED.includes(u.role) && !u.mfa_enabled && u.status === 'ACTIVE'
+    mustChangePassword: false, mfaEnrollmentRequired: PRIVILEGED.includes(u.role) && !u.mfa_enabled && u.status === 'ACTIVE',
+    mfaEnrolRequired: staffMfaRequired() && STAFF_ROLES.includes(u.role) && !u.mfa_enabled && u.status === 'ACTIVE'
   });
 
   async function startSession(user: any, request: FastifyRequest, reply: FastifyReply, action: string, provider: Provider) {
@@ -360,6 +365,7 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
 
   app.post('/onboarding', AUTH_RATE, async (request, reply) => {
     const s = verifyBlob<any>((request.cookies || {})[SIGNUP_COOKIE]);
+    if (!(await verifyCaptcha((request.body as any)?.captchaToken, request.ip || '', opts.captchaFetch))) return reply.status(400).send({ error: 'Please complete the human check and try again.', code: 'CAPTCHA_FAILED' });
     if (!s) return reply.status(401).send({ error: 'Your sign-up session expired. Please sign in with Google or GitHub again.', code: 'NO_SIGNUP' });
     const parsed = onboardingSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -378,7 +384,12 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
     }
 
     const userId = id('USR');
-    const unusable = await hashPassword(crypto.randomBytes(32).toString('base64') + 'aA1!');
+    let pending: any = null;
+    if (s.p === 'email') {
+      pending = (await db.query('SELECT * FROM pending_signups WHERE token_hash = $1 AND expires_at > CURRENT_TIMESTAMP', [s.pid])).rows[0];
+      if (!pending) return reply.status(401).send({ error: 'Your sign-up session expired. Please start again.', code: 'NO_SIGNUP' });
+    }
+    const unusable = pending ? pending.password_hash : await hashPassword(crypto.randomBytes(32).toString('base64') + 'aA1!');
     const m = meta(request);
     let status: 'ACTIVE' | 'PENDING_APPROVAL' = 'ACTIVE';
     let orgId: string | null = null;
@@ -408,15 +419,19 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
       }
       await tx.query(
         `INSERT INTO users (id, email, password_hash, role, name, designation, department_id, organization_id, google_sub, auth_provider, has_password, phone, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, FALSE, $11, $12)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $13, $11, $12)`,
         [userId, email, unusable, d.role, d.name,
          d.role === 'startup' ? 'Founder' : d.role === 'investor' ? 'Investor' : (d as any).designation,
-         deptId, orgId, s.p === 'google' ? s.s : null, s.p, d.phone, status]
+         deptId, orgId, s.p === 'google' ? s.s : null, s.p === 'email' ? 'local' : s.p, d.phone, status, !!pending]
       );
-      await tx.query(
-        `INSERT INTO auth_identities (id, user_id, provider, provider_user_id, email, email_verified, display_name, profile_url) VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7)`,
-        [id('IDN'), userId, s.p, s.s, email, s.n, s.u || null]
-      );
+      if (s.p !== 'email') {
+        await tx.query(
+          `INSERT INTO auth_identities (id, user_id, provider, provider_user_id, email, email_verified, display_name, profile_url) VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7)`,
+          [id('IDN'), userId, s.p, s.s, email, s.n, s.u || null]
+        );
+      } else {
+        await tx.query('DELETE FROM pending_signups WHERE token_hash = $1', [s.pid]);
+      }
       if (d.role === 'investor') {
         await tx.query(
           `INSERT INTO investor_profiles (user_id, investor_type, organisation, website, linkedin_url, sectors) VALUES ($1,$2,$3,$4,$5,$6::jsonb)`,
@@ -544,9 +559,10 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
   const sha = (t: string) => crypto.createHash('sha256').update(t).digest('hex');
   const esc = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 
-  app.post('/forgot-password', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
+  app.post('/forgot-password', strict(5, '1 minute'), async (request, reply) => {
     // Always the same answer, so nobody can use this to find out who has an account.
     const generic = { success: true, message: 'If that email belongs to an account, a reset link is on its way.' };
+    if (!(await verifyCaptcha((request.body as any)?.captchaToken, request.ip || '', opts.captchaFetch))) return reply.status(400).send({ error: 'Please complete the human check and try again.', code: 'CAPTCHA_FAILED' });
     const parsed = z.object({ email: z.string().trim().email().max(200) }).safeParse(request.body);
     if (!parsed.success) return reply.send(generic);
     const user = (await db.query('SELECT id, name, email, role, is_active FROM users WHERE LOWER(email) = LOWER($1)', [parsed.data.email])).rows[0];
@@ -584,5 +600,41 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
     });
     await auditService.logEvent({ actorId: user.id, actorName: user.name, actorRole: user.role, action: 'PASSWORD_RESET_COMPLETED', entityType: 'USER', entityId: user.id, ...meta(request) });
     return reply.send({ success: true });
+  });
+  // ───────────── Email + password sign-up (everyone except administrators) ─────────────
+  app.post('/signup-email', strict(5, '10 minutes'), async (request, reply) => {
+    const generic = { success: true, message: 'If that address can be used, we have sent a confirmation link. It works once and expires in 30 minutes.' };
+    if (!(await verifyCaptcha((request.body as any)?.captchaToken, request.ip || '', opts.captchaFetch))) return reply.status(400).send({ error: 'Please complete the human check and try again.', code: 'CAPTCHA_FAILED' });
+    if (process.env.NODE_ENV === 'production' && !(process.env.BREVO_API_KEY && process.env.EMAIL_FROM)) {
+      return reply.status(503).send({ error: 'Email sign-up is not available yet. Please sign in with Google.', code: 'EMAIL_NOT_CONFIGURED' });
+    }
+    const parsed = z.object({ email: z.string().trim().email().max(200), name: z.string().trim().min(2).max(120), password: z.string().min(1).max(200) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Enter your name, a valid email and a password.' });
+    const strength = validatePasswordStrength(parsed.data.password);
+    if (!strength.valid) return reply.status(400).send({ error: 'Choose a stronger password', details: strength.errors, code: 'WEAK_PASSWORD' });
+    const email = parsed.data.email.toLowerCase();
+    const exists = (await db.query('SELECT 1 FROM users WHERE LOWER(email) = $1', [email])).rows.length > 0;
+    if (!exists) {
+      const token = crypto.randomBytes(32).toString('hex');
+      await db.query('DELETE FROM pending_signups WHERE LOWER(email) = $1', [email]);
+      await db.query('INSERT INTO pending_signups (token_hash, email, name, password_hash, expires_at) VALUES ($1,$2,$3,$4,$5)', [sha(token), email, parsed.data.name, await hashPassword(parsed.data.password), new Date(Date.now() + 30 * 60 * 1000)]);
+      const link = `${baseUrl(request)}/api/v1/auth/verify-email?token=${token}`;
+      try {
+        await opts.emailProvider.sendEmail({
+          to: email, subject: 'Confirm your email for Startup2Sarkar',
+          text: `Hello ${parsed.data.name},\n\nConfirm this address to continue creating your account (the link works once and expires in 30 minutes):\n${link}\n\nIf this was not you, ignore this email.`,
+          html: `<p>Hello ${esc(parsed.data.name)},</p><p>Confirm this address to continue creating your account (the link works once and expires in 30 minutes):</p><p><a href="${link}">Confirm my email</a></p><p>If this was not you, ignore this email.</p>`
+        });
+      } catch (e: any) { request.log.error({ err: e?.message }, 'signup email failed'); }
+    }
+    return reply.send(generic); // identical whether or not the address already has an account
+  });
+
+  app.get('/verify-email', AUTH_RATE, async (request, reply) => {
+    const token = String((request.query as any).token || '');
+    const row = token.length >= 20 ? (await db.query('SELECT token_hash, email, name FROM pending_signups WHERE token_hash = $1 AND expires_at > CURRENT_TIMESTAMP', [sha(token)])).rows[0] : null;
+    if (!row) return reply.redirect('/login?error=verify_failed');
+    reply.setCookie(SIGNUP_COOKIE, signBlob({ p: 'email', s: row.token_hash, pid: row.token_hash, e: row.email, n: row.name, a: null, u: null, l: null }, 1800), cookieOpts(1800));
+    return reply.redirect('/signup');
   });
 }

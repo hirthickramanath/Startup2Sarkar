@@ -306,6 +306,71 @@ export async function challengeRoutes(
     return reply.send({ addenda: rows });
   });
 
+  // Questions from bidders, answered officially. Answered questions are public to all signed-in bidders.
+  app.post('/:id/questions', { preHandler: [authenticate, requireRole('startup')], config: { rateLimit: { max: 20, timeWindow: '1 hour' } } }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ question: z.string().trim().min(10).max(500) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Ask a question of at least 10 characters.' });
+    const ch = (await db.query('SELECT id, status, department_id FROM challenges WHERE id = $1', [id])).rows[0];
+    if (!ch || !['PUBLISHED', 'PROPOSALS_RECEIVED'].includes(ch.status)) return reply.status(404).send({ error: 'Challenge not found or no longer open for questions' });
+    const open = await db.query('SELECT COUNT(*) AS c FROM challenge_questions WHERE challenge_id = $1 AND organization_id = $2 AND answer IS NULL', [id, authReq.user.organizationId]);
+    if (Number(open.rows[0].c) >= 5) return reply.status(429).send({ error: 'You already have 5 unanswered questions on this challenge.' });
+    const qid = `QST-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    await db.query('INSERT INTO challenge_questions (id, challenge_id, organization_id, asked_by_user_id, question) VALUES ($1,$2,$3,$4,$5)', [qid, id, authReq.user.organizationId, authReq.user.userId, parsed.data.question]);
+    await db.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) SELECT 'NTF-' || $1::text || '-' || u.id, u.id, 'New question on a challenge', 'A startup asked a question that needs an official answer.', 'INFO', $2::text FROM users u WHERE u.role = 'government' AND u.department_id = $3`, [qid, `/government/challenges/${id}`, ch.department_id]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'startup', action: 'CHALLENGE_QUESTION_ASKED', entityType: 'CHALLENGE', entityId: id, details: { questionId: qid }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.status(201).send({ success: true, id: qid });
+  });
+
+  app.get('/:id/questions', { preHandler: [authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const authReq = request as AuthenticatedRequest;
+    const ch = (await db.query('SELECT status, department_id FROM challenges WHERE id = $1', [id])).rows[0];
+    if (!ch) return reply.status(404).send({ error: 'Challenge not found' });
+    const role = authReq.user.role;
+    if (role === 'startup' && ch.status === 'DRAFT') return reply.status(404).send({ error: 'Challenge not found' });
+    if (role === 'government' && authReq.user.departmentId && ch.department_id !== authReq.user.departmentId) return reply.status(403).send({ error: 'Forbidden' });
+    const all = (await db.query('SELECT id, organization_id, question, answer, answered_at, created_at FROM challenge_questions WHERE challenge_id = $1 ORDER BY created_at DESC', [id])).rows;
+    // Bidders see every answered question (without who asked) plus their own unanswered ones; officials see everything
+    const visible = role === 'startup' ? all.filter((q: any) => q.answer || q.organization_id === authReq.user.organizationId) : ['government', 'admin'].includes(role) ? all : [];
+    return reply.send({ questions: visible.map((q: any) => ({ id: q.id, question: q.question, answer: q.answer, answeredAt: q.answered_at, askedAt: q.created_at, mine: q.organization_id === authReq.user.organizationId })) });
+  });
+
+  app.post('/:id/questions/:qid/answer', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id, qid } = request.params as { id: string; qid: string };
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ answer: z.string().trim().min(5).max(1000) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Write an answer of at least 5 characters.' });
+    const ch = (await db.query('SELECT department_id FROM challenges WHERE id = $1', [id])).rows[0];
+    if (!ch) return reply.status(404).send({ error: 'Challenge not found' });
+    if (authReq.user.role === 'government' && authReq.user.departmentId && ch.department_id !== authReq.user.departmentId) return reply.status(403).send({ error: 'Forbidden: this challenge belongs to another department' });
+    const q = (await db.query('SELECT id, answer, organization_id FROM challenge_questions WHERE id = $1 AND challenge_id = $2', [qid, id])).rows[0];
+    if (!q) return reply.status(404).send({ error: 'Question not found' });
+    if (q.answer) return reply.status(409).send({ error: 'This question was already answered.' });
+    await db.query('UPDATE challenge_questions SET answer = $1, answered_by_user_id = $2, answered_at = CURRENT_TIMESTAMP WHERE id = $3', [parsed.data.answer, authReq.user.userId, qid]);
+    await db.query(`INSERT INTO notifications (id, user_id, title, message, priority, action_link) SELECT 'NTF-' || $1::text || '-' || u.id, u.id, 'Your question was answered', $2::text, 'INFO', $3::text FROM users u WHERE u.organization_id = $4`, [qid, parsed.data.answer.slice(0, 120), `/startup/challenges/${id}`, q.organization_id]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'CHALLENGE_QUESTION_ANSWERED', entityType: 'CHALLENGE', entityId: id, details: { questionId: qid }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true });
+  });
+
+  // Reuse a challenge as a template: copy it as a new DRAFT
+  app.post('/:id/duplicate', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const authReq = request as AuthenticatedRequest;
+    const src = (await db.query('SELECT * FROM challenges WHERE id = $1', [id])).rows[0];
+    if (!src) return reply.status(404).send({ error: 'Challenge not found' });
+    if (authReq.user.role === 'government' && authReq.user.departmentId && src.department_id !== authReq.user.departmentId) return reply.status(403).send({ error: 'Forbidden: this challenge belongs to another department' });
+    const newId = `CH-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`;
+    const skip = new Set(['created_at', 'updated_at', 'published_at', 'closed_at', 'archived_at']);
+    const copy: Record<string, any> = { ...src, id: newId, title: `${String(src.title).slice(0, 190)} (copy)`, status: 'DRAFT', created_by_user_id: authReq.user.userId, deadline: new Date(Date.now() + 30 * 86400000).toISOString() };
+    const cols = Object.keys(copy).filter((k) => !skip.has(k) && copy[k] !== undefined);
+    const vals = cols.map((k) => { const v = copy[k]; return v !== null && typeof v === 'object' && !(v instanceof Date) ? JSON.stringify(v) : typeof v === 'bigint' ? v.toString() : v; });
+    await db.query(`INSERT INTO challenges (${cols.join(', ')}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})`, vals);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'CHALLENGE_DUPLICATED', entityType: 'CHALLENGE', entityId: newId, details: { copiedFrom: id }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.status(201).send({ success: true, id: newId });
+  });
+
   app.post('/:id/close', { preHandler: [authenticate, requireRole('government', 'admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const authReq = request as AuthenticatedRequest;

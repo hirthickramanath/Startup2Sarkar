@@ -688,3 +688,46 @@ textarea.form-control {
 .tab-btn.active { font-weight: 700; color: var(--gov-navy-800); border-bottom-color: var(--gov-navy-800); }
 .row-card { padding: 1rem; border: 1px solid var(--slate-200); border-radius: var(--radius-sm); background: var(--slate-50); display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
 .as-head h2 { color: #fff; }
+
+/* ───── Brand intro (theme-aware) ───── */
+@keyframes in2Bar { from { width: 0; } to { width: 100%; } }
+@keyframes in2Pulse { 0%, 100% { opacity: .35; transform: scale(1); } 50% { opacity: .9; transform: scale(1.35); } }
+.in2 { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.1rem; cursor: pointer; overflow: hidden;
+  background: radial-gradient(60rem 38rem at 50% 32%, var(--white), var(--slate-50) 72%); color: var(--ink); transition: opacity .42s ease, transform .42s ease; font-family: 'Figtree', system-ui, sans-serif; }
+.in2.leave { opacity: 0; transform: scale(1.02); pointer-events: none; }
+.in2-grid { position: absolute; inset: 0; background-image: linear-gradient(var(--slate-200) 1px, transparent 1px), linear-gradient(90deg, var(--slate-200) 1px, transparent 1px); background-size: 52px 52px; opacity: .5; mask-image: radial-gradient(circle at 50% 42%, #000 0%, transparent 72%); -webkit-mask-image: radial-gradient(circle at 50% 42%, #000 0%, transparent 72%); }
+.in2-skip { position: absolute; top: 1.25rem; right: 1.25rem; z-index: 3; display: flex; align-items: center; gap: .5rem; padding: .5rem .9rem; border-radius: 999px; border: 1px solid var(--slate-300); background: var(--white); color: var(--slate-900); font: 600 .8rem 'Figtree', sans-serif; cursor: pointer; }
+.in2-skip kbd { font: 600 .68rem 'JetBrains Mono', monospace; padding: .1rem .35rem; border: 1px solid var(--slate-300); border-radius: 4px; background: var(--slate-50); }
+.in2-stage { position: relative; width: min(760px, 92vw); transition: transform .8s cubic-bezier(.4, 0, .2, 1), opacity .8s ease; transform-origin: 50% 100%; }
+.in2-stage.small { transform: scale(.72) translateY(-4px); opacity: .9; }
+.in2-svg { width: 100%; height: auto; display: block; overflow: visible; }
+.in2-ground { stroke: var(--slate-300); stroke-width: 3; stroke-linecap: round; }
+.in2-block { fill: var(--ink); opacity: .9; }
+.in2-span { fill: none; stroke: var(--ink); stroke-width: 6; stroke-linecap: round; }
+.in2-hanger { stroke: var(--slate-500); stroke-width: 2; stroke-linecap: round; }
+.in2-roof, .in2-col { fill: var(--ink); opacity: .35; transition: opacity .5s ease; }
+.in2-gov.lit .in2-roof, .in2-gov.lit .in2-col { opacity: 1; }
+.in2-halo { fill: var(--accent); opacity: .3; transform-box: fill-box; transform-origin: center; animation: in2Pulse 1.6s ease-in-out infinite; }
+.in2-spark { fill: var(--accent); }
+.in2-brand { display: flex; align-items: center; gap: clamp(.7rem, 2vw, 1.2rem); min-height: 5.5rem; }
+.in2-logo { width: clamp(56px, 9vw, 84px); height: auto; overflow: visible; }
+.in2-logo path, .in2-logo rect { fill: var(--ink); }
+.in2-logo .g-c { fill: var(--accent); }
+.in2-logo .g-l, .in2-logo .g-r, .in2-logo .g-c, .in2-logo .g-s { opacity: 0; transition: transform .7s cubic-bezier(.2, .9, .3, 1.2), opacity .5s ease; }
+.in2-logo .g-l { transform: translateX(-26px); } .in2-logo .g-r { transform: translateX(26px); }
+.in2-logo .g-c { transform: translateY(-34px); transform-box: fill-box; } .in2-logo .g-s { transform: translateY(34px); transform-box: fill-box; }
+.in2-brand.on .g-l, .in2-brand.on .g-r, .in2-brand.on .g-c, .in2-brand.on .g-s { opacity: 1; transform: none; }
+.in2-brand.on .g-c { transition-delay: .15s; } .in2-brand.on .g-s { transition-delay: .25s; }
+.in2-title { margin: 0; font: 800 clamp(2rem, 6.2vw, 3.6rem) 'Sora', 'Figtree', sans-serif; letter-spacing: -0.03em; color: var(--ink); display: flex; }
+.in2-title span { opacity: 0; transform: translateY(16px); transition: opacity .45s ease, transform .45s cubic-bezier(.2, .9, .3, 1.1); }
+.in2-title .two { color: var(--accent-text); }
+.in2-brand.on .in2-title span { opacity: 1; transform: none; }
+.in2-tag { margin: 0; font-size: clamp(.95rem, 2vw, 1.15rem); letter-spacing: .06em; color: var(--slate-600); opacity: 0; transform: translateY(8px); transition: opacity .6s ease, transform .6s ease; }
+.in2-tag.on { opacity: 1; transform: none; }
+.in2-bar { position: absolute; left: 0; bottom: 0; height: 4px; width: 100%; background: var(--slate-200); }
+.in2-bar i { display: block; height: 100%; width: 0; background: var(--accent); animation: in2Bar linear forwards; }
+@media (prefers-reduced-motion: reduce) {
+  .in2 *, .in2 { transition: none !important; animation: none !important; }
+  .in2-logo .g-l, .in2-logo .g-r, .in2-logo .g-c, .in2-logo .g-s, .in2-title span, .in2-tag { opacity: 1; transform: none; }
+  .in2-bar i { width: 100%; }
+}

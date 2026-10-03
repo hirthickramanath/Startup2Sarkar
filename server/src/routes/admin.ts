@@ -544,4 +544,46 @@ export async function adminRoutes(
     await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: `INVESTOR_${parsed.data.status}`, entityType: 'USER', entityId: userId, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
     return reply.send({ success: true });
   });
+  // ───────────── Verifying a startup: documents, checklist and warning flags ─────────────
+  const CHECKLIST = { dpiit: 'DPIIT recognition checked on the DPIIT portal', incorporation: 'Incorporation (CIN / LLPIN) checked on the MCA portal', pan: 'PAN matches the company name', gstin: 'GSTIN is active and matches', bank: 'Bank account verified (cancelled cheque or penny-drop)', documents: 'Uploaded documents reviewed' } as const;
+
+  app.get('/startups/:id/review', async (request: FastifyRequest, reply: FastifyReply) => {
+    const id = (request.params as any).id;
+    const org = (await db.query(`SELECT id, name, dpiit_number, cin_llpin, pan, gstin, bank_account_masked, ifsc_code, founder_name, founder_email, founder_phone, sector, verification_status, verification_notes, verification_checklist FROM organizations WHERE id = $1`, [id])).rows[0];
+    if (!org) return reply.status(404).send({ error: 'Startup not found' });
+    const docs = (await db.query(`SELECT id, doc_type, filename, size_bytes, status, review_note, created_at FROM organization_documents WHERE organization_id = $1 AND status <> 'SUPERSEDED' ORDER BY created_at DESC`, [id])).rows;
+    const flags: any[] = [];
+    const dup = async (type: string, label: string, sql: string, params: any[]) => { for (const o of (await db.query(sql, params)).rows) flags.push({ type, message: `${label} is also used by "${o.name}"`, otherOrganizationId: o.id }); };
+    if (org.bank_account_masked && org.ifsc_code) await dup('SHARED_BANK_ACCOUNT', 'This bank account', 'SELECT id, name FROM organizations WHERE id <> $1 AND bank_account_masked = $2 AND ifsc_code = $3', [id, org.bank_account_masked, org.ifsc_code]);
+    if (org.gstin) await dup('SHARED_GSTIN', 'This GSTIN', 'SELECT id, name FROM organizations WHERE id <> $1 AND gstin = $2', [id, org.gstin]);
+    if (org.founder_phone) await dup('SHARED_PHONE', 'This phone number', 'SELECT id, name FROM organizations WHERE id <> $1 AND founder_phone = $2', [id, org.founder_phone]);
+    const missing = [['DPIIT number', org.dpiit_number], ['CIN / LLPIN', org.cin_llpin], ['PAN', org.pan], ['GSTIN', org.gstin], ['Bank account', org.bank_account_masked], ['IFSC', org.ifsc_code]].filter(([, v]) => !v).map(([k]) => k);
+    const checklist = typeof org.verification_checklist === 'string' ? JSON.parse(org.verification_checklist) : org.verification_checklist || {};
+    return reply.send({
+      organization: org, documents: docs, flags, missingDetails: missing,
+      checklist: Object.entries(CHECKLIST).map(([key, label]) => ({ key, label, done: !!checklist[key]?.done, note: checklist[key]?.note || '', at: checklist[key]?.at || null }))
+    });
+  });
+
+  app.put('/startups/:id/checklist', async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ key: z.enum(Object.keys(CHECKLIST) as [string, ...string[]]), done: z.boolean(), note: z.string().trim().max(300).optional() }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Choose a checklist item.' });
+    const id = (request.params as any).id;
+    const org = (await db.query('SELECT verification_checklist FROM organizations WHERE id = $1', [id])).rows[0];
+    if (!org) return reply.status(404).send({ error: 'Startup not found' });
+    const cur = typeof org.verification_checklist === 'string' ? JSON.parse(org.verification_checklist) : org.verification_checklist || {};
+    cur[parsed.data.key] = { done: parsed.data.done, note: parsed.data.note || '', by: authReq.user.userId, at: new Date().toISOString() };
+    await db.query('UPDATE organizations SET verification_checklist = $1::jsonb WHERE id = $2', [JSON.stringify(cur), id]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: 'VERIFICATION_CHECK_UPDATED', entityType: 'ORGANIZATION', entityId: id, details: { item: parsed.data.key, done: parsed.data.done }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true });
+  });
+
+  app.get('/trends', async (_request: FastifyRequest, reply: FastifyReply) => {
+    const months: string[] = [];
+    for (let i = 5; i >= 0; i--) { const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - i); months.push(d.toISOString().slice(0, 7)); }
+    const count = async (table: string, col = 'created_at', extra = '') => { const r = (await db.query(`SELECT to_char(${col}, 'YYYY-MM') AS m, COUNT(*) AS c FROM ${table} WHERE ${col} >= date_trunc('month', CURRENT_TIMESTAMP) - INTERVAL '5 months' ${extra} GROUP BY 1`)).rows; return (m: string) => Number(r.find((x: any) => x.m === m)?.c || 0); };
+    const users = await count('users'); const proposals = await count('proposals', 'created_at', "AND status <> 'DRAFT'"); const pilots = await count('pilots'); const challenges = await count('challenges');
+    return reply.send({ months: months.map((m) => ({ month: m, users: users(m), proposals: proposals(m), pilots: pilots(m), challenges: challenges(m) })) });
+  });
 }

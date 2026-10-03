@@ -7,6 +7,7 @@ import {
 import { StatusBadge } from '../../common/ui';
 import { DataTable } from '../../common/ui';
 import { WithdrawProposal } from '../../common/Management';
+import { DraftsPanel } from '../../common/Platform';
 
 export function StartupProposals() {
   const { state, navigate } = useApp();
@@ -169,6 +170,7 @@ export function StartupProposals() {
           </div>
         </div>
       )}
+      <DraftsPanel />
       <WithdrawProposal />
     </div>
   );
