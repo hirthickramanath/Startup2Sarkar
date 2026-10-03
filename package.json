@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "test": "tsx --test server/tests/*.test.ts",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "e2e": "node e2e/run.mjs",
+    "e2e:build": "vite build && node e2e/run.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
@@ -43,11 +45,12 @@
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
+    "puppeteer-core": "^25.12.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
   },
   "engines": {
     "node": ">=20"
   },
-  "description": "Startup2Sarkar — outcome-based innovation procurement platform (challenges → proposals → pilots → verified milestone payments)"
+  "description": "Startup2Sarkar \u2014 outcome-based innovation procurement platform (challenges \u2192 proposals \u2192 pilots \u2192 verified milestone payments)"
 }

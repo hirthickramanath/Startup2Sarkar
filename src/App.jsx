@@ -9,6 +9,7 @@ import { AccountSecurity } from './components/common/AccountSecurity';
 import { InvestorDashboard, InvestorStartups, InvestorIntros, InvestorProfile } from './components/roles/investor/Investor';
 import { FinanceTaxLedger } from './components/roles/finance/FinanceTaxLedger';
 import { FinanceReconcile } from './components/roles/finance/FinanceReconcile';
+import { ScaleupPage, AdminAppeals } from './components/common/Pipeline';
 import { AdminStartups } from './components/roles/admin/AdminStartups';
 import { AdminAccessRequests } from './components/roles/admin/AdminAccess';
 import { AppShell } from './components/common/AppShell';
@@ -97,6 +98,9 @@ const ROUTES = [
 
   ['/admin/dashboard', 'Platform operations', () => <AdminDashboard />],
   ['/admin/startups', 'Startup verification', () => <AdminStartups />],
+  ['/admin/appeals', 'Appeals', () => <AdminAppeals />],
+  ['/admin/scaleup', 'Scale-up pipeline', () => <ScaleupPage />],
+  ['/government/scaleup', 'Scale-up pipeline', () => <ScaleupPage />],
   ['/admin/access-requests', 'Access requests', () => <AdminAccessRequests />],
   ['/admin/users', 'User directory', () => <AdminUsers />],
   ['/admin/departments', 'Departments', () => <AdminDepartments />],

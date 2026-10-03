@@ -4,6 +4,7 @@ import { pilotsApi } from '../../../api';
 import { ArrowLeft, Send, Printer, MapPin, UserCheck, Download } from 'lucide-react';
 import { StatusBadge, ConfirmationDialog, EmptyState, PageHeader, inr, inrPaise } from '../../common/ui';
 import { PilotActions } from '../../common/Management';
+import { ScaleupRecommend } from '../../common/Pipeline';
 
 export function GovernmentPilotDetail({ pilotId }) {
   const { state, forwardPilotToFinance, assignInspector, navigate, toast } = useApp();
@@ -107,6 +108,7 @@ export function GovernmentPilotDetail({ pilotId }) {
         message={`The inspection docket and pilot dossier for “${pilot.name}” will be sent to the Finance Division. This is recorded in the audit trail under your name.`}
       />
       <PilotActions pilot={pilot} />
+      <ScaleupRecommend pilot={pilot} />
     </div>
   );
 }

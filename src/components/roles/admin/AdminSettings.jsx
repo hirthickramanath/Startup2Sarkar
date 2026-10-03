@@ -3,6 +3,7 @@ import { useApp } from '../../../store';
 import { adminApi } from '../../../api';
 import { Save } from 'lucide-react';
 import { PageHeader, useBusy } from '../../common/ui';
+import { PaymentFormats } from '../../common/Pipeline';
 
 export function AdminSettings() {
   const { act, state } = useApp();
@@ -46,6 +47,7 @@ export function AdminSettings() {
         <div className="form-group" style={{ margin: 0, maxWidth: 220 }}><label className="form-label" htmlFor="sla">Payment processing SLA (days)</label><input id="sla" type="number" min="1" max="90" className="form-control" value={s.slaDays} onChange={num('slaDays')} /></div>
         <div><button className="btn btn-primary" disabled={busy} onClick={save}><Save size={15} /> {busy ? 'Saving…' : 'Save settings'}</button></div>
       </div>
+      <PaymentFormats />
     </div>
   );
 }

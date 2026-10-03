@@ -224,3 +224,21 @@ export const platformApi = {
   deleteDraft: (id) => api.del(`/proposals/${id}/draft`),
   submitDraft: (id) => api.post(`/proposals/${id}/submit`),
 };
+
+export const pipelineApi = {
+  scaleups: () => api.get('/pipeline/scaleup'),
+  recommendScaleup: (d) => api.post('/pipeline/scaleup', d),
+  decideScaleup: (id, decision, note) => api.post(`/pipeline/scaleup/${id}/decide`, { decision, note }),
+  appeals: () => api.get('/pipeline/appeals'),
+  fileAppeal: (proposalId, reason) => api.post('/pipeline/appeals', { proposalId, reason }),
+  decideAppeal: (id, decision, note) => api.post(`/pipeline/appeals/${id}/decide`, { decision, note }),
+  fileTemplates: () => api.get('/finance/payment-file/templates'),
+  addFileTemplate: (d) => api.post('/finance/payment-file/templates', d),
+  deleteFileTemplate: (id) => api.del(`/finance/payment-file/templates/${id}`),
+  // The bank file is sensitive and returned as text, so it is fetched with the session cookie and saved from memory
+  async paymentFile(templateId, claimIds) {
+    const res = await fetch(`${API_BASE}/finance/payment-file`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId, claimIds }) });
+    if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'The file could not be created'); }
+    return res.text();
+  },
+};

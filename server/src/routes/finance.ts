@@ -5,7 +5,7 @@ import { computeDeductions, loadTaxSettings } from '../tax';
 import { AuditService } from '../audit';
 import { TreasuryProvider } from '../adapters';
 import { AiProvider } from '../ai';
-import { AuthenticatedRequest, createAuthMiddleware, requireRole } from '../security';
+import { AuthenticatedRequest, createAuthMiddleware, requireRole, decryptField } from '../security';
 import { getFinanceCaseFileData, financeCaseFileToCsv, financeCaseFileToPdf, claimsListToCsv, budgetLedgerToCsv } from '../reports';
 
 const submitClaimSchema = z.object({
@@ -912,5 +912,85 @@ export async function financeRoutes(
     const months: string[] = [];
     for (let i = 5; i >= 0; i--) { const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - i); months.push(d.toISOString().slice(0, 7)); }
     return reply.send({ months: months.map((m) => { const r = rows.find((x: any) => x.m === m); return { month: m, claims: r ? Number(r.submitted) : 0, grossPaise: r ? String(r.gross) : '0', paidNetPaise: r ? String(r.paid_net) : '0' }; }) });
+  });
+  // ───────────── Bank payment files (bulk transfer upload), in the layout each bank accepts ─────────────
+  const FILE_FIELDS = ['beneficiaryName', 'accountNumber', 'ifsc', 'amountRupees', 'amountPaise', 'narration', 'reference', 'paymentDate', 'invoiceNumber', 'claimId', 'email', 'fixed'] as const;
+  const TEXT_FIELDS = new Set(['beneficiaryName', 'narration', 'invoiceNumber', 'fixed', 'reference']);
+  const templateSchema = z.object({
+    name: z.string().trim().min(3).max(60),
+    delimiter: z.enum([',', ';', '|', '\t']).default(','),
+    dateFormat: z.enum(['YYYY-MM-DD', 'DD/MM/YYYY', 'DDMMYYYY']).default('YYYY-MM-DD'),
+    includeHeader: z.boolean().default(true),
+    columns: z.array(z.object({ header: z.string().trim().max(40), field: z.enum(FILE_FIELDS), value: z.string().max(60).optional() })).min(1).max(20)
+  });
+  // Built in and bank-neutral; administrators add the exact layout their bank asks for
+  const BUILTIN_TEMPLATES = [
+    { id: 'builtin-generic', name: 'Generic CSV (all common fields)', delimiter: ',', dateFormat: 'YYYY-MM-DD', includeHeader: true, builtin: true, columns: [
+      { header: 'Beneficiary name', field: 'beneficiaryName' }, { header: 'Account number', field: 'accountNumber' }, { header: 'IFSC', field: 'ifsc' }, { header: 'Amount (INR)', field: 'amountRupees' },
+      { header: 'Narration', field: 'narration' }, { header: 'Reference', field: 'reference' }, { header: 'Payment date', field: 'paymentDate' }] },
+    { id: 'builtin-bulk', name: 'Bulk transfer (account, IFSC, amount)', delimiter: ',', dateFormat: 'DD/MM/YYYY', includeHeader: false, builtin: true, columns: [
+      { header: '', field: 'accountNumber' }, { header: '', field: 'ifsc' }, { header: '', field: 'beneficiaryName' }, { header: '', field: 'amountRupees' }, { header: '', field: 'narration' }] }
+  ];
+  const loadTemplate = async (id: string) => BUILTIN_TEMPLATES.find((t) => t.id === id) ?? null;
+  const dbTemplate = async (id: string) => { const r = (await db.query('SELECT * FROM payment_file_templates WHERE id = $1', [id])).rows[0]; return r ? { id: r.id, name: r.name, delimiter: r.delimiter, dateFormat: r.date_format, includeHeader: r.include_header, builtin: false, columns: typeof r.columns === 'string' ? JSON.parse(r.columns) : r.columns } : null; };
+  const rupees = (p: bigint) => `${p / 100n}.${(p % 100n).toString().padStart(2, '0')}`;
+  const fmtDate = (iso: string, f: string) => { const [y, m, d] = iso.split('-'); return f === 'DD/MM/YYYY' ? `${d}/${m}/${y}` : f === 'DDMMYYYY' ? `${d}${m}${y}` : iso; };
+
+  app.get('/payment-file/templates', { preHandler: [authenticate, requireRole('finance', 'admin')] }, async (_request: FastifyRequest, reply: FastifyReply) => {
+    const rows = (await db.query('SELECT * FROM payment_file_templates ORDER BY name')).rows;
+    return reply.send({ templates: [...BUILTIN_TEMPLATES, ...rows.map((r: any) => ({ id: r.id, name: r.name, delimiter: r.delimiter, dateFormat: r.date_format, includeHeader: r.include_header, builtin: false, columns: typeof r.columns === 'string' ? JSON.parse(r.columns) : r.columns }))], fields: FILE_FIELDS });
+  });
+
+  app.post('/payment-file/templates', { preHandler: [authenticate, requireRole('admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = templateSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Check the file layout: a name, and 1-20 columns each with a field.', details: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) });
+    if (parsed.data.columns.some((c) => c.field === 'fixed' && !c.value)) return reply.status(400).send({ error: 'A fixed column needs a value.' });
+    const id = `PFT-${Date.now().toString(36).toUpperCase()}`;
+    try { await db.query('INSERT INTO payment_file_templates (id, name, delimiter, date_format, include_header, columns, created_by_user_id) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)', [id, parsed.data.name, parsed.data.delimiter, parsed.data.dateFormat, parsed.data.includeHeader, JSON.stringify(parsed.data.columns), authReq.user.userId]); }
+    catch { return reply.status(409).send({ error: 'A layout with that name already exists.' }); }
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: 'PAYMENT_FILE_TEMPLATE_CREATED', entityType: 'SETTINGS', entityId: id, details: { name: parsed.data.name }, ...meta(request) });
+    return reply.status(201).send({ success: true, id });
+  });
+
+  app.delete('/payment-file/templates/:id', { preHandler: [authenticate, requireRole('admin')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const exists = (await db.query('SELECT 1 FROM payment_file_templates WHERE id = $1', [(request.params as any).id])).rows.length > 0;
+    if (!exists) return reply.status(404).send({ error: 'Layout not found (built-in layouts cannot be deleted)' });
+    await db.query('DELETE FROM payment_file_templates WHERE id = $1', [(request.params as any).id]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: 'PAYMENT_FILE_TEMPLATE_DELETED', entityType: 'SETTINGS', entityId: (request.params as any).id, ...meta(request) });
+    return reply.send({ success: true });
+  });
+
+  app.post('/payment-file', { preHandler: [authenticate, requireRole('finance', 'admin')], config: { rateLimit: { max: 20, timeWindow: '10 minutes' } } }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ templateId: z.string().min(3), claimIds: z.array(z.string()).min(1).max(200) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Choose a file layout and 1-200 approved claims.' });
+    const tpl = (await loadTemplate(parsed.data.templateId)) ?? (await dbTemplate(parsed.data.templateId));
+    if (!tpl) return reply.status(404).send({ error: 'File layout not found' });
+    const ids = [...new Set(parsed.data.claimIds)];
+    const claims = (await db.query(
+      `SELECT c.*, o.name AS org_name, o.bank_account_encrypted, o.ifsc_code, o.founder_email FROM finance_payment_claims c JOIN organizations o ON o.id = c.organization_id WHERE c.id = ANY($1::text[])`, [ids])).rows;
+    if (claims.length !== ids.length) return reply.status(404).send({ error: 'One or more claims were not found.' });
+    const dateIso = today();
+    const lines: string[] = [];
+    const cell = (v: string, text: boolean) => { let x = String(v ?? ''); if (text && /^[=+\-@\t\r]/.test(x)) x = `'${x}`; if (x.includes(tpl.delimiter) || /["\r\n]/.test(x)) x = `"${x.replace(/"/g, '""')}"`; return x; };
+    if (tpl.includeHeader) lines.push(tpl.columns.map((c: any) => cell(c.header, true)).join(tpl.delimiter));
+    let total = 0n;
+    for (const c of claims) {
+      if (c.status !== 'APPROVED' || c.payment_method === 'CHEQUE') return reply.status(409).send({ error: `Claim ${c.id} is not an approved electronic payment (status ${c.status}).`, code: 'INVALID_CLAIM_STATE' });
+      if ((await needsTwoPeople(c)) && [c.approver_user_id, c.first_reviewer_user_id].includes(authReq.user.userId)) return reply.status(403).send({ error: 'Segregation of duties: for a payment this size, someone other than the two approvers must prepare the bank file.', code: 'SEGREGATION_OF_DUTIES' });
+      let account = '';
+      try { account = decryptField(c.bank_account_encrypted); } catch { account = ''; }
+      if (!/^\d{9,18}$/.test(account) || !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(String(c.ifsc_code || '').toUpperCase())) return reply.status(409).send({ error: `Bank details are missing or unreadable for ${c.org_name}. Ask the startup to update them.`, code: 'BANK_DETAILS_MISSING' });
+      const net = BigInt(c.net_payable_paise); total += net;
+      const values: Record<string, string> = { beneficiaryName: c.org_name, accountNumber: account, ifsc: c.ifsc_code, amountRupees: rupees(net), amountPaise: net.toString(), narration: `S2S ${c.invoice_number}`.slice(0, 60), reference: c.id, paymentDate: fmtDate(dateIso, tpl.dateFormat), invoiceNumber: c.invoice_number, claimId: c.id, email: c.founder_email || '' };
+      lines.push(tpl.columns.map((col: any) => col.field === 'fixed' ? cell(col.value || '', true) : cell(values[col.field], TEXT_FIELDS.has(col.field))).join(tpl.delimiter));
+    }
+    await db.query('UPDATE finance_payment_claims SET payment_file_exported_at = CURRENT_TIMESTAMP WHERE id = ANY($1::text[])', [ids]);
+    // The audit trail records who exported what, but never an account number
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'PAYMENT_FILE_EXPORTED', entityType: 'PAYMENT_CLAIM', entityId: ids[0], details: { claimIds: ids, count: ids.length, template: tpl.name, totalPaise: total.toString() }, ...meta(request) });
+    reply.header('Content-Type', 'text/csv; charset=utf-8').header('Content-Disposition', `attachment; filename="payment-file-${dateIso}.csv"`).header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff');
+    return reply.send(lines.join('\r\n') + '\r\n');
   });
 }

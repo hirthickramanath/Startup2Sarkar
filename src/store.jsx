@@ -149,7 +149,7 @@ function normalizePayment(p) {
     grossAmount: rupees(gross), netPayable: rupees(p.net_payable_paise), tdsDeduction: rupees(p.tds_paise), gstTdsDeduction: rupees(p.gst_paise),
     status: statusLabel(p.status), rawStatus: p.status, holdReason: p.hold_reason || '',
     requesterId: p.requester_user_id, firstReviewerId: p.first_reviewer_user_id || null, approverId: p.approver_user_id || null, date: day(p.created_at),
-    paymentMethod: p.payment_method || null, chequeNumber: p.cheque_number || '', chequeDate: p.cheque_day || '', draweeBank: p.drawee_bank || '', signatories: p.cheque_signatories || '',
+    exportedAt: p.payment_file_exported_at || null, paymentMethod: p.payment_method || null, chequeNumber: p.cheque_number || '', chequeDate: p.cheque_day || '', draweeBank: p.drawee_bank || '', signatories: p.cheque_signatories || '',
     chequeHistory: Array.isArray(p.cheque_history) ? p.cheque_history : [],
     paidDate: day(p.disbursed_at), disbursementReference: p.disbursement_reference || '',
     demoTransactionId: p.disbursement_reference || null,

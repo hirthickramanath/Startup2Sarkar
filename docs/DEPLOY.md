@@ -65,6 +65,10 @@ New releases add database tables and columns automatically on start (migrations 
 
 In production every government, finance, inspector and admin account must turn on two-step verification before it can reach any data; the first administrator is asked on first sign-in. Keep the recovery codes somewhere safe.
 
+## 3d. Bank payment files
+
+Each bank accepts bulk transfers in its own layout. In **Admin → System settings → Bank payment file layouts** add one layout per bank, copying the column order from the template your bank gives you. Finance then chooses a layout when exporting from **Payment claims → Bank payment file**. The file contains account numbers, so treat it like cash: download it, upload it to the bank, and delete it.
+
 ## 4. After it is live
 
 - Create departments and budgets (Admin → Departments), then invite officials, finance officers and inspectors (Admin → Users). Each gets a one-time temporary password.

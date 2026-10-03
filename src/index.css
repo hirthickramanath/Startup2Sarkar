@@ -731,3 +731,19 @@ textarea.form-control {
   .in2-logo .g-l, .in2-logo .g-r, .in2-logo .g-c, .in2-logo .g-s, .in2-title span, .in2-tag { opacity: 1; transform: none; }
   .in2-bar i { width: 100%; }
 }
+
+/* ───── Responsive shell: below 900px the sidebar becomes a slide-in drawer ───── */
+.mobile-toggle { display: none; }
+.shell-backdrop { display: none; }
+@media (max-width: 900px) {
+  .mobile-toggle { display: inline-grid !important; place-items: center; width: 40px; height: 40px; border-radius: 10px !important; border: 1px solid var(--slate-300) !important; background: var(--white) !important; }
+  .shell-header { padding: 0 .75rem !important; gap: .5rem; }
+  .shell-aside { position: fixed !important; top: 0; bottom: 0; left: 0; z-index: 800; width: min(300px, 86vw) !important; transform: translateX(-102%); transition: transform .24s ease; overflow-y: auto; padding-top: 4.5rem; box-shadow: 8px 0 30px rgba(0, 0, 0, .25); visibility: hidden; }
+  .shell-aside.open { transform: none; visibility: visible; }
+  .shell-backdrop { display: block; position: fixed; inset: 0; z-index: 790; background: rgba(8, 12, 20, .5); }
+  .shell-main { padding: 1rem !important; }
+  .shell-search { width: 40px !important; height: 40px; padding: 0 !important; justify-content: center !important; }
+  .shell-search kbd, .shell-search .hide-sm { display: none !important; }
+}
+@media (max-width: 700px) { .hide-sm { display: none !important; } }
+@media (max-width: 560px) { .shell-crumbs { min-width: 0; overflow: hidden; } .shell-crumbs span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } }

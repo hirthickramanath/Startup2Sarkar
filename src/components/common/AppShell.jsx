@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../store';
 import { 
   Building, Compass, FileText, CheckSquare, Shield, 
@@ -25,6 +25,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  useEffect(() => { setMobileMenuOpen(false); }, [currentRoute]);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 
   // Filter unread notifications for current role
@@ -42,6 +43,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           { label: 'Innovation Challenges', route: '/government/challenges', icon: Compass },
           { label: 'AI Pilot Manager', route: '/government/pilot-manager', icon: Cpu, badge: 'Advisory' },
           { label: 'Monitored Pilots', route: '/government/pilots', icon: FileText },
+          { label: 'Scale-up Pipeline', route: '/government/scaleup', icon: TrendingUp },
           { label: 'Sovereign Audit Trail', route: '/government/audit', icon: Shield }
         ];
       case 'startup':
@@ -84,6 +86,8 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           { label: 'Platform Console', route: '/admin/dashboard', icon: Building },
           { label: 'Access Requests', route: '/admin/access-requests', icon: CheckSquare, count: (state.accessRequests || []).length },
           { label: 'Startup Verification', route: '/admin/startups', icon: ShieldCheck },
+          { label: 'Appeals', route: '/admin/appeals', icon: Shield },
+          { label: 'Scale-up Pipeline', route: '/admin/scaleup', icon: TrendingUp },
           { label: 'User Directory', route: '/admin/users', icon: Users },
           { label: 'Departments', route: '/admin/departments', icon: Layers },
           { label: 'AI Configuration', route: '/admin/ai', icon: Cpu },
@@ -124,14 +128,14 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
         {/* Left: Branding & National Emblem Indicator */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
           <Logo size={22} nameSize={15} tone="onDark" />
-          <span style={{ opacity: 0.4 }}>|</span>
-          <span style={{ fontSize: '0.74rem', color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <span className="hide-sm" style={{ opacity: 0.4 }}>|</span>
+          <span className="hide-sm" style={{ fontSize: '0.74rem', color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
             <span>Innovation procurement platform</span>
           </span>
         </div>
 
         {/* Center / Right: Sovereign Security & Compliance Badges */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', color: 'rgba(255,255,255,0.7)', fontSize: '0.72rem' }}>
+        <div className="hide-sm" style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', color: 'rgba(255,255,255,0.7)', fontSize: '0.72rem' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
             <Shield size={12} color="#60a5fa" />
             <span>Every action is audit-logged</span>
@@ -140,7 +144,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
       </div>
 
       {/* 2. Top Application Bar */}
-      <header style={{
+      <header className="shell-header" style={{
         background: 'var(--white)',
         borderBottom: '1px solid var(--slate-200)',
         height: '56px',
@@ -157,21 +161,23 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           <button 
             type="button"
             className="mobile-toggle"
-            style={{ display: 'none', background: 'none', border: 'none', cursor: 'pointer' }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink)' }}
+            aria-expanded={mobileMenuOpen}
             onClick={() => setMobileMenuOpen(prev => !prev)}
             aria-label="Toggle Navigation"
           >
             <Menu size={20} />
           </button>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--slate-500)' }}>
-            <span style={{ fontWeight: 600, color: 'var(--slate-700)' }}>
+          <div className="shell-crumbs" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--slate-500)' }}>
+            <span className="hide-sm" style={{ fontWeight: 600, color: 'var(--slate-700)' }}>
               {roleLabels[currentRole]?.name}
             </span>
             {breadcrumbs.map((crumb, idx) => (
               <React.Fragment key={idx}>
-                <ChevronRight size={13} />
+                <ChevronRight size={13} className={idx === breadcrumbs.length - 1 ? 'hide-sm' : 'hide-sm'} />
                 <span 
+                  className={idx === breadcrumbs.length - 1 ? '' : 'hide-sm'}
                   style={{ 
                     color: idx === breadcrumbs.length - 1 ? 'var(--slate-900)' : 'var(--slate-500)',
                     fontWeight: idx === breadcrumbs.length - 1 ? 700 : 500,
@@ -191,6 +197,8 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           {/* Global Search Trigger (Ctrl+K) */}
           <button
             type="button"
+            className="shell-search"
+            aria-label="Search"
             onClick={() => setIsSearchOpen(true)}
             style={{
               background: 'var(--slate-100)',
@@ -209,7 +217,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
               <Search size={14} color="var(--slate-400)" />
-              <span>Search or command...</span>
+              <span className="hide-sm">Search or command...</span>
             </div>
             <kbd style={{
               background: 'var(--white)',
@@ -389,7 +397,8 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
       {/* 3. Main Body: Sidebar + Page Content */}
       <div style={{ display: 'flex', flex: 1 }}>
         {/* Left Sidebar Navigation */}
-        <aside style={{
+        {mobileMenuOpen && <div className="shell-backdrop" onClick={() => setMobileMenuOpen(false)} aria-hidden="true" />}
+        <aside className={`shell-aside ${mobileMenuOpen ? 'open' : ''}`} aria-label="Main navigation" style={{
           width: '240px',
           background: 'var(--white)',
           borderRight: '1px solid var(--slate-200)',
@@ -495,8 +504,9 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
         </aside>
 
         {/* Center Main Content Area */}
-        <main style={{ 
+        <main className="shell-main" style={{ 
           flex: 1, 
+          minWidth: 0,
           padding: '1.5rem 2rem', 
           maxWidth: '1440px',
           margin: '0 auto',

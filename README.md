@@ -4,7 +4,7 @@
 
 It is built to replace the usual mix of emails, spreadsheets and paper files in startup-led pilots with one system where **money is exact, every decision has a named person, and nobody sees data they are not meant to see.**
 
-> **Status: a serious prototype.** It runs, it is tested (126 automated backend tests), and it has been exercised end to end in a real browser. It has **not** had an independent security or accessibility audit, and has not been load-tested. Read [Known limits](#known-limits-and-roadmap) before putting real money or citizen data through it.
+> **Status: a serious prototype.** It runs, it is tested (135 automated backend tests, plus a 46-check browser suite), and it has been exercised end to end in a real browser. It has **not** had an independent security or accessibility audit, and has not been load-tested. Read [Known limits](#known-limits-and-roadmap) before putting real money or citizen data through it.
 
 ---
 
@@ -49,11 +49,13 @@ It is built to replace the usual mix of emails, spreadsheets and paper files in 
 - **Pilot, proposal and challenge management**: extend or terminate a pilot, save proposal **drafts** and submit when ready, withdraw a proposal, extend a challenge deadline, post addenda, run a public **question and answer** thread (answered questions are shown to every bidder), and copy a challenge as a template.
 - **Verification**: startups upload up to four statutory documents (PDF only, content-checked, private, integrity-hashed) to **Supabase Storage or local disk**; administrators review them with a **checklist** and automatic **warnings when startups share a bank account, GSTIN or phone number**.
 - **Bank reconciliation**: upload a bank statement CSV; cheques and transfers are matched to claims by number and amount; finance reviews, then applies.
+- **Bank payment files for any bank**: finance exports approved electronic payments as a bulk-transfer file. Because every bank asks for a different layout, administrators define the layout for each bank (column order, headings, separator, date format, fixed columns); two bank-neutral layouts are built in. Account numbers are decrypted only to build the file, never written to the audit trail, and spreadsheet-formula injection is neutralised.
+- **Scale-up pipeline and appeals**: an official recommends a validated pilot for full rollout and a different person decides; a startup can appeal a rejection once within 15 days to an administrator outside the department, and an upheld appeal returns the proposal to review.
 - **Trend charts** on the finance and admin dashboards.
 - **Account security**: forgot-password by email, change password, **mandatory two-step verification for staff in production** (a full-screen enrolment with QR code and recovery codes, enforced on the server), and an optional **Cloudflare Turnstile** human check on sign-up and reset.
 - **AI assistant** that answers from the signed-in user's own records (rules engine; optional Gemini, fenced in).
 - **Themes**: three named themes (Graphite, Burst, Meadow), each in light and dark, remembered per browser; skippable brand intro animation.
-- Docker, Render blueprint, CI workflow, OpenAPI docs (development). The brand intro (drawn in the app's own theme colours) plays on every normal page load and can be skipped; a logo pack lives in `public/logo/`.
+- Docker, Render blueprint, CI workflow, OpenAPI docs (development). The brand intro (drawn in the app's own theme colours) plays on every normal page load and can be skipped; a logo pack lives in `public/logo/`. The signed-in shell is responsive: on a phone the navigation is a slide-in drawer.
 
 ## Languages and stack
 
@@ -88,8 +90,9 @@ server/src/
   objectstore.ts    private document storage (Supabase Storage or local disk)
   captcha.ts        Cloudflare Turnstile verification (fails closed)
   routes/           auth · identity · challenges · proposals · pilots · finance · admin · network · assistant · platform
-  migrations/       001_initial_schema.sql · 002_identity.sql · 003_payments.sql · 004_email.sql · 005_management.sql · 006_platform.sql  (idempotent, run on every start)
-server/tests/       api-integration · idor-security · domain-unit · s2s · identity · payments · management · platform
+  migrations/       001_initial_schema.sql · 002_identity.sql · 003_payments.sql · 004_email.sql · 005_management.sql · 006_platform.sql · 007_pipeline.sql  (idempotent, run on every start)
+server/tests/       api-integration · idor-security · domain-unit · s2s · identity · payments · management · platform · pipeline
+e2e/                browser suite (Puppeteer): lib, test server, flows, runner
 src/
   main.jsx, App.jsx           providers, route table, role gate, error boundary
   store.jsx                   theme + auth + app state, all real API actions (no mock data)
@@ -273,7 +276,7 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 </details>
 
 <details>
-<summary><b>/api/v1/finance</b> (27 endpoints)</summary>
+<summary><b>/api/v1/finance</b> (31 endpoints)</summary>
 
 | Method | Path | Who may call it |
 |---|---|---|
@@ -282,6 +285,10 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 | `GET` | `/api/v1/finance/budget` | finance, admin |
 | `POST` | `/api/v1/finance/copilot` | finance, admin |
 | `GET` | `/api/v1/finance/dashboard` | finance, admin |
+| `POST` | `/api/v1/finance/payment-file` | finance, admin |
+| `GET` | `/api/v1/finance/payment-file/templates` | finance, admin |
+| `POST` | `/api/v1/finance/payment-file/templates` | admin |
+| `DELETE` | `/api/v1/finance/payment-file/templates/:id` | admin |
 | `GET` | `/api/v1/finance/payments` | any signed-in user |
 | `POST` | `/api/v1/finance/payments` | startup |
 | `GET` | `/api/v1/finance/payments/:id` | any signed-in user |
@@ -351,6 +358,20 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 | `PUT` | `/api/v1/network/me` | investor |
 | `PUT` | `/api/v1/network/showcase` | startup |
 | `GET` | `/api/v1/network/startups` | investor |
+
+</details>
+
+<details>
+<summary><b>/api/v1/pipeline</b> (6 endpoints)</summary>
+
+| Method | Path | Who may call it |
+|---|---|---|
+| `GET` | `/api/v1/pipeline/appeals` | startup, admin, government |
+| `POST` | `/api/v1/pipeline/appeals` | startup |
+| `POST` | `/api/v1/pipeline/appeals/:id/decide` | admin |
+| `GET` | `/api/v1/pipeline/scaleup` | government, admin, startup |
+| `POST` | `/api/v1/pipeline/scaleup` | government, admin |
+| `POST` | `/api/v1/pipeline/scaleup/:id/decide` | government, admin |
 
 </details>
 
@@ -435,7 +456,7 @@ Health probes: `GET /health` (liveness) and `GET /ready` (checks the database).
 
 PostgreSQL tables (all created by the idempotent migrations in `server/src/migrations/`):
 
-`access_requests`, `ai_audit_logs`, `ai_evaluations`, `audit_logs`, `auth_identities`, `challenge_addenda`, `challenge_questions`, `challenges`, `departments`, `files`, `finance_anomalies`, `finance_payment_claims`, `investor_intros`, `investor_profiles`, `invitations`, `kpi_submissions`, `notifications`, `organization_documents`, `organizations`, `password_resets`, `pending_signups`, `pilot_inspections`, `pilot_kpis`, `pilot_milestones`, `pilots`, `profile_links`, `proposals`, `risks`, `sessions`, `stalled_pilots`, `system_settings`, `tax_remittances`, `users`
+`access_requests`, `ai_audit_logs`, `ai_evaluations`, `audit_logs`, `auth_identities`, `challenge_addenda`, `challenge_questions`, `challenges`, `departments`, `files`, `finance_anomalies`, `finance_payment_claims`, `investor_intros`, `investor_profiles`, `invitations`, `kpi_submissions`, `notifications`, `organization_documents`, `organizations`, `password_resets`, `payment_file_templates`, `pending_signups`, `pilot_inspections`, `pilot_kpis`, `pilot_milestones`, `pilots`, `profile_links`, `proposal_appeals`, `proposals`, `risks`, `scaleup_plans`, `sessions`, `stalled_pilots`, `system_settings`, `tax_remittances`, `users`
 
 Key rules: money columns are integer paise (`bigint`); `audit_logs` is append-only and hash-chained; `auth_identities` holds one row per linked sign-in provider; `access_requests` and `investor_profiles` back the approval flows.
 
@@ -452,7 +473,11 @@ Key rules: money columns are integer paise (`bigint`); `audit_logs` is append-on
 npm run typecheck && npm run lint && npm test
 ```
 
-126 backend tests cover: the full five-role procurement lifecycle and audit-chain integrity; per-role access boundaries; the tax engine; Google token verification; the GitHub flow with a mocked GitHub; onboarding for every role; email sign-up and confirmation; approval and rejection; pending-account lockout; **investor isolation across every non-investor endpoint**; introductions; linking; proposal links and drafts; the **cheque lifecycle, two-person approval, segregation of duties and the tax ledger**; **bank-statement reconciliation**; forgot-password and decision emails (mocked Brevo); **mandatory staff two-step verification**; the **fail-closed CAPTCHA** (mocked Cloudflare); **document uploads** (content checks, privacy, integrity, mocked Supabase Storage); the verification checklist and duplicate-detail flags; challenge Q&A and templates; pilot, proposal and challenge management; the assistant's scope fence; and the market feed. The suite also passes against a real PostgreSQL 16 (set `DATABASE_URL` and run with `--test-concurrency=1`). The interface has been exercised in a headless browser (themes, light/dark, GitHub sign-up wizard, approval, investor workspace, startup profile); there is no browser test suite in the repository yet (the scripts used for checking are not included).
+135 backend tests cover: the full five-role procurement lifecycle and audit-chain integrity; per-role access boundaries; the tax engine; Google token verification; the GitHub flow with a mocked GitHub; onboarding for every role; email sign-up and confirmation; approval and rejection; pending-account lockout; investor isolation across every non-investor endpoint; introductions; linking; proposal links and drafts; the cheque lifecycle, two-person approval, segregation of duties and the tax ledger; bank-statement reconciliation; **bank payment files** (layouts, formula safety, no account numbers in the audit trail, segregation of duties); **scale-up recommendations and appeals** (two-person rule, windows, scoping); forgot-password and decision emails (mocked Brevo); mandatory staff two-step verification; the fail-closed CAPTCHA (mocked Cloudflare); document uploads (content checks, privacy, integrity, mocked Supabase Storage); the verification checklist and duplicate-detail flags; challenge Q&A and templates; pilot, proposal and challenge management; the assistant's scope fence; and the market feed. ### Browser tests
+
+`npm run e2e` (after `npm run build`) starts a guarded test server on an in-memory database and drives the real app in Chrome or Edge through 46 checks: the intro, role-first sign-in, GitHub for startups, email and Google sign-up, approvals, the cheque lifecycle, tax ledger, reconciliation, bank payment file, documents, drafts, Q&A, scale-up, appeals, forced staff two-step verification, and a phone-width check of the navigation drawer. It also writes dark-mode and phone screenshots to `e2e/screenshots/` for a quick visual review. Set `CHROME_PATH` if your browser is not found automatically; `E2E_PART=main` or `E2E_PART=sweep` runs half of it. The test server refuses to start when `NODE_ENV=production` and is never part of the deployed app.
+
+The suite also passes against a real PostgreSQL 16 (set `DATABASE_URL` and run with `--test-concurrency=1`). The interface has been exercised in a headless browser (themes, light/dark, GitHub sign-up wizard, approval, investor workspace, startup profile); the browser suite covers the main journeys, not every screen.
 
 ## Deployment
 
@@ -461,8 +486,8 @@ See **[docs/DEPLOY.md](docs/DEPLOY.md)** for Render + Supabase step by step, Goo
 ## Known limits and roadmap
 
 **Not built yet (planned)**
-- Real **DPIIT / CIN / PAN / GSTIN / bank verification** through a government or commercial API (administrators verify manually with a checklist today), and direct treasury (PFMS) or bank integration.
-- An in-repo browser test suite, and the longer ideas list: scale-up pipeline, appeals, fraud scoring beyond shared-detail flags, evaluation committees, contract e-signing, a mobile inspector app, regional languages, and so on.
+- Real **DPIIT / CIN / PAN / GSTIN / bank verification** through a government or commercial API (administrators verify manually with a checklist today), and direct treasury (PFMS) or bank integration beyond the payment files.
+- The longer ideas list: evaluation committees with scorecards, contract e-signing, an auditor role, several users per startup, in-app messaging, a mobile inspector app, regional languages, and so on.
 
 **Know before you rely on it**
 - Not independently security- or accessibility-audited. Treat as a prototype.

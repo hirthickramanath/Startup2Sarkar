@@ -8,6 +8,7 @@ import { StatusBadge } from '../../common/ui';
 import { DataTable } from '../../common/ui';
 import { WithdrawProposal } from '../../common/Management';
 import { DraftsPanel } from '../../common/Platform';
+import { AppealsPanel } from '../../common/Pipeline';
 
 export function StartupProposals() {
   const { state, navigate } = useApp();
@@ -171,6 +172,7 @@ export function StartupProposals() {
         </div>
       )}
       <DraftsPanel />
+      <AppealsPanel />
       <WithdrawProposal />
     </div>
   );
