@@ -85,6 +85,11 @@ describe('Platform: documents, verification review, reconciliation, Q&A, drafts,
       assert.strictEqual(calls[0].init.headers.Authorization, 'Bearer svc-key'); assert.strictEqual(calls[0].init.headers['x-upsert'], 'true');
       assert.strictEqual((await store.get('ORG 1/BANK_PROOF/doc 1.pdf')).toString(), 'FILEDATA');
       assert.match(calls[1].url, /\/object\/authenticated\/docs\//);
+      // The newer secret-key format must travel in the apikey header only, never as a Bearer token
+      const seen: any[] = [];
+      const modern = new SupabaseObjectStore('https://proj.supabase.co', 'sb_secret_abc123', 'docs', (async (url: any, init: any) => { seen.push(init.headers); return new Response('{}', { status: 200 }); }) as any);
+      await modern.put('o/t/d.pdf', Buffer.from('abc'), 'application/pdf');
+      assert.strictEqual(seen[0].apikey, 'sb_secret_abc123'); assert.strictEqual(seen[0].Authorization, undefined, 'no Authorization header for sb_secret_ keys');
       const failing = new SupabaseObjectStore('https://p.supabase.co', 'k', 'docs', (async () => new Response('no', { status: 500 })) as any);
       await assert.rejects(() => failing.put('a/b', Buffer.from('x'), 'application/pdf'), /Storage upload failed/);
     });

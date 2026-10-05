@@ -40,7 +40,12 @@ export class SupabaseObjectStore implements ObjectStore {
   private endpoint(kind: 'object' | 'object/authenticated', key: string) {
     return `${this.url.replace(/\/+$/, '')}/storage/v1/${kind}/${encodeURIComponent(this.bucket)}/${safeKey(key).split('/').map(encodeURIComponent).join('/')}`;
   }
-  private headers(extra: Record<string, string> = {}) { return { Authorization: `Bearer ${this.serviceKey}`, apikey: this.serviceKey, ...extra }; }
+  // Supabase's newer secret keys (sb_secret_...) are not JWTs and must be sent in the apikey header ONLY; the older JWT-style service_role key goes in both
+  private headers(extra: Record<string, string> = {}) {
+    const h: Record<string, string> = { apikey: this.serviceKey, ...extra };
+    if (!this.serviceKey.startsWith('sb_')) h.Authorization = `Bearer ${this.serviceKey}`;
+    return h;
+  }
   async put(key: string, data: Buffer, contentType: string): Promise<void> {
     const res = await this.fetchImpl(this.endpoint('object', key), { method: 'POST', headers: this.headers({ 'Content-Type': contentType, 'x-upsert': 'true' }), body: new Uint8Array(data), signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(`Storage upload failed (HTTP ${res.status})`);

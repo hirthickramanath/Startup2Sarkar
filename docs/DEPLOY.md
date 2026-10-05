@@ -22,7 +22,7 @@ Create a free Turnstile widget in the Cloudflare dashboard (Turnstile → Add wi
 
 ## 2d. Document storage (recommended): Supabase Storage
 
-In Supabase open **Storage → New bucket**, name it `documents` and keep it **private**. Under **Project Settings → API** copy the project URL and the `service_role` key. Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` (and `SUPABASE_BUCKET` if you used another name). The service key can read everything in the project, so it belongs only in the host's environment settings. Without these, uploaded PDFs go to local disk and disappear on redeploy unless `UPLOAD_DIR` is a mounted volume.
+In Supabase open **Storage → New bucket**, name it `documents` and keep it **private**. Under **Settings → API Keys**, open the **Publishable and secret API keys** tab, create a **secret key** (it starts with `sb_secret_`) and copy it; the project URL is under **Settings → API** (or the Connect button). The older `service_role` key on the **Legacy API Keys** tab also works. Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` (and `SUPABASE_BUCKET` if you used another name). The service key can read everything in the project, so it belongs only in the host's environment settings. Without these, uploaded PDFs go to local disk and disappear on redeploy unless `UPLOAD_DIR` is a mounted volume.
 
 ## 2a. Email (optional): forgot-password and decision emails
 
