@@ -261,3 +261,8 @@ export const messagesApi = {
   close: (id) => api.post(`/messages/threads/${id}/close`),
   reopen: (id) => api.post(`/messages/threads/${id}/reopen`),
 };
+
+export const emailApi = {
+  status: () => api.get('/admin/email/status'),
+  test: (to) => api.post('/admin/email/test', to ? { to } : {}),
+};

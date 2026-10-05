@@ -45,7 +45,7 @@ function RegistrationForm({ s }) {
       <div>
         <h2 style={{ margin: 0, fontSize: '1.05rem' }}>Registration details</h2>
         <p style={{ margin: '4px 0 0', fontSize: '0.82rem', color: 'var(--slate-600)', maxWidth: 560 }}>
-          Complete these before bidding. Format checks run when you save. The bank account number is encrypted and shown masked. Changing statutory or bank details after verification sends your startup back for re-verification, which protects payments from being redirected.
+          Complete these before bidding. All of these are optional for now: add them when you have them. Format checks run when you save. You will need bank details before an electronic payment can be made to you; cheques do not need them. The bank account number is encrypted and shown masked. Changing statutory or bank details after verification sends your startup back for re-verification, which protects payments from being redirected.
         </p>
       </div>
       <div className="lp-grid2">

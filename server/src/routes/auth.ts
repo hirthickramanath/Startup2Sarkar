@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { DatabaseAdapter } from '../db';
 import { AuditService } from '../audit';
 import { verifyCaptcha } from '../captcha';
+import { EmailProvider } from '../adapters';
 import { hashPassword, verifyPassword, validatePasswordStrength, generateMfaSecret, verifyTotpToken, generateRecoveryCodes, verifyRecoveryCode, signToken, verifyToken, isValidPan, isValidGstin, isValidCinOrLlpin, isValidDpiitNumber, isValidIfsc, encryptField, maskBankAccount, maskPan, sha256, AuthenticatedRequest, createAuthMiddleware, requireRole, staffMfaRequired, STAFF_ROLES, mfaEnrolmentRequired, MFA_MAX_SKIPS, MFA_SKIP_HOURS } from '../security';
 
 const loginSchema = z.object({
@@ -13,6 +14,7 @@ const loginSchema = z.object({
   captchaToken: z.string().optional()
 });
 
+const optionalText = <T extends z.ZodTypeAny>(inner: T) => z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), inner.optional());
 const registerStartupSchema = z.object({
   startupName: z.string().min(2),
   founderName: z.string().min(2),
@@ -21,19 +23,30 @@ const registerStartupSchema = z.object({
   phone: z.string().min(10),
   website: z.string().url().optional().or(z.literal('')),
   sector: z.string().min(2),
-  dpiitNumber: z.string().min(4),
-  cinLlpin: z.string().min(6),
-  pan: z.string().length(10),
-  gstin: z.string().length(15),
-  bankAccountNumber: z.string().min(8),
-  ifscCode: z.string().length(11)
+  // Statutory and bank details are optional for now: blank means "not provided yet"; when given they are still checked
+  dpiitNumber: optionalText(z.string().trim().min(4)),
+  cinLlpin: optionalText(z.string().trim().min(6)),
+  pan: optionalText(z.string().trim().length(10)),
+  gstin: optionalText(z.string().trim().length(15)),
+  bankAccountNumber: optionalText(z.string().trim().min(8)),
+  ifscCode: optionalText(z.string().trim().length(11))
 });
 
-export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapter; auditService: AuditService; captchaFetch?: typeof fetch }) {
+export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapter; auditService: AuditService; captchaFetch?: typeof fetch; emailProvider?: EmailProvider }) {
   const { db, auditService } = opts;
   const AUTH_RATE = { config: { rateLimit: { max: parseInt(process.env.AUTH_RATE_MAX || '10', 10), timeWindow: '1 minute' } } };
 
   const PRIVILEGED = ['government', 'inspector', 'finance', 'admin'];
+  /** A security notice by email (best effort; a failed email never fails the action itself). */
+  const mailSecurity = async (userId: string, subject: string, what: string) => {
+    if (!opts.emailProvider) return;
+    try {
+      const u = (await db.query('SELECT email, name FROM users WHERE id = $1', [userId])).rows[0];
+      if (!u) return;
+      const text = `Hello ${u.name},\n\n${what}\n\nIf this was not you, contact your administrator immediately and change your password.\n\nStartup2Sarkar`;
+      await opts.emailProvider.sendEmail({ to: u.email, subject, text, html: `<p>Hello ${String(u.name).replace(/[<>&]/g, '')},</p><p>${what}</p><p>If this was not you, contact your administrator immediately and change your password.</p><p>Startup2Sarkar</p>` });
+    } catch { /* recorded in the email log */ }
+  };
 
   const authenticate = createAuthMiddleware(db);
 
@@ -363,6 +376,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
     }
 
     await db.query('UPDATE users SET mfa_enabled = TRUE WHERE id = $1', [authReq.user.userId]);
+    await mailSecurity(authReq.user.userId, 'Two-step verification is now on', 'Two-step verification was turned on for your Startup2Sarkar account. From now on you will need a code from your authenticator app each time you sign in.');
 
     await auditService.logEvent({
       actorId: authReq.user.userId,
@@ -379,7 +393,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
   });
 
   // 5. Public Startup Self-Registration with Statutory Checksum Verification
-  app.post('/register-startup', { config: { rateLimit: { max: 5, timeWindow: '10 minutes' } } }, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post('/register-startup', { config: { rateLimit: { max: parseInt(process.env.AUTH_RATE_MAX || '0', 10) >= 100 ? 1000 : 5, timeWindow: '10 minutes' } } }, async (request: FastifyRequest, reply: FastifyReply) => {
     if (!(await verifyCaptcha((request.body as any)?.captchaToken, request.ip || '', opts.captchaFetch))) {
       return reply.status(400).send({ error: 'Please complete the human check and try again.', code: 'CAPTCHA_FAILED' });
     }
@@ -390,30 +404,14 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
 
     const data = parseResult.data;
 
-    // Check PAN
-    if (!isValidPan(data.pan.toUpperCase())) {
-      return reply.status(400).send({ error: 'Invalid Permanent Account Number (PAN) format or structure.' });
-    }
-
-    // Check GSTIN
-    if (!isValidGstin(data.gstin.toUpperCase())) {
-      return reply.status(400).send({ error: 'Invalid GSTIN format or Mod-36 checksum verification failed.' });
-    }
-
-    // Check CIN / LLPIN
-    if (!isValidCinOrLlpin(data.cinLlpin)) {
-      return reply.status(400).send({ error: 'Invalid Corporate Identity Number (CIN) or LLPIN format.' });
-    }
-
-    // Check DPIIT Number
-    if (!isValidDpiitNumber(data.dpiitNumber)) {
-      return reply.status(400).send({ error: 'Invalid DPIIT Recognition Number format (e.g. DIPP12345 or DPIIT/2026/12345).' });
-    }
-
-    // Check IFSC
-    if (!isValidIfsc(data.ifscCode)) {
-      return reply.status(400).send({ error: 'Invalid Bank IFSC Code format.' });
-    }
+    if (data.pan && !isValidPan(data.pan.toUpperCase())) return reply.status(400).send({ error: 'Invalid Permanent Account Number (PAN) format or structure.' });
+    if (data.gstin && !isValidGstin(data.gstin.toUpperCase())) return reply.status(400).send({ error: 'Invalid GSTIN format or Mod-36 checksum verification failed.' });
+    if (data.cinLlpin && !isValidCinOrLlpin(data.cinLlpin)) return reply.status(400).send({ error: 'Invalid Corporate Identity Number (CIN) or LLPIN format.' });
+    if (data.dpiitNumber && !isValidDpiitNumber(data.dpiitNumber)) return reply.status(400).send({ error: 'Invalid DPIIT Recognition Number format (e.g. DIPP12345 or DPIIT/2026/12345).' });
+    if (data.ifscCode && !isValidIfsc(data.ifscCode)) return reply.status(400).send({ error: 'Invalid Bank IFSC Code format.' });
+    if (!!data.bankAccountNumber !== !!data.ifscCode) return reply.status(400).send({ error: 'Give both the bank account number and the IFSC code, or leave both blank for now.' });
+    if (data.dpiitNumber && (await db.query('SELECT 1 FROM organizations WHERE dpiit_number = $1', [data.dpiitNumber.toUpperCase()])).rows.length) return reply.status(409).send({ error: 'A startup with this DPIIT number is already registered.' });
+    if (data.cinLlpin && (await db.query('SELECT 1 FROM organizations WHERE cin_llpin = $1', [data.cinLlpin.toUpperCase()])).rows.length) return reply.status(409).send({ error: 'A startup with this CIN / LLPIN is already registered.' });
 
     // Password strength check
     const strength = validatePasswordStrength(data.password);
@@ -430,9 +428,9 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
     const orgId = `ORG-${Date.now().toString().slice(-6)}`;
     const userId = `USR-${Date.now().toString().slice(-6)}`;
     const passwordHash = await hashPassword(data.password);
-    const bankEncrypted = encryptField(data.bankAccountNumber);
-    const bankMasked = maskBankAccount(data.bankAccountNumber);
-    const panMasked = maskPan(data.pan.toUpperCase());
+    const bankEncrypted = data.bankAccountNumber ? encryptField(data.bankAccountNumber) : null;
+    const bankMasked = data.bankAccountNumber ? maskBankAccount(data.bankAccountNumber) : null;
+    const panMasked = data.pan ? maskPan(data.pan.toUpperCase()) : null;
 
     await db.transaction(async (tx) => {
       // Insert Organization with PENDING status
@@ -446,13 +444,13 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
         [
           orgId,
           data.startupName,
-          data.dpiitNumber.toUpperCase(),
-          data.cinLlpin.toUpperCase(),
+          data.dpiitNumber ? data.dpiitNumber.toUpperCase() : null,
+          data.cinLlpin ? data.cinLlpin.toUpperCase() : null,
           panMasked,
-          data.gstin.toUpperCase(),
+          data.gstin ? data.gstin.toUpperCase() : null,
           bankEncrypted,
           bankMasked,
-          data.ifscCode.toUpperCase(),
+          data.ifscCode ? data.ifscCode.toUpperCase() : null,
           data.founderName,
           data.email,
           data.phone,
@@ -479,7 +477,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
       entityId: orgId,
       details: {
         startupName: data.startupName,
-        dpiitNumber: data.dpiitNumber.toUpperCase(),
+        dpiitNumber: data.dpiitNumber ? data.dpiitNumber.toUpperCase() : null,
         verificationStatus: 'PENDING'
       },
       ipAddress: request.ip || '127.0.0.1',
@@ -593,6 +591,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
     await db.query('UPDATE users SET password_hash = $1, must_change_password = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [await hashPassword(parsed.data.newPassword), authReq.user.userId]);
     await db.query('DELETE FROM sessions WHERE user_id = $1 AND id <> $2', [authReq.user.userId, authReq.user.sessionId]);
     await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'AUTH_PASSWORD_CHANGED', entityType: 'SECURITY', entityId: authReq.user.userId, ipAddress: request.ip || '127.0.0.1', userAgent: (request.headers['user-agent'] as string) || 'Unknown' });
+    await mailSecurity(authReq.user.userId, 'Your password was changed', 'The password for your Startup2Sarkar account was just changed.');
     return reply.send({ success: true });
   });
 

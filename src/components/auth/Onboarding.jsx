@@ -50,7 +50,7 @@ export function Onboarding() {
     try {
       const sectors = (f.sectors || '').split(',').map((x) => x.trim()).filter(Boolean);
       const payload = { role, name: f.name, phone: f.phone, acceptTerms: !!f.acceptTerms, captchaToken: captcha };
-      if (role === 'startup') Object.assign(payload, { startupName: f.startupName, sector: f.sector, dpiitNumber: f.dpiitNumber });
+      if (role === 'startup') Object.assign(payload, { startupName: f.startupName, sector: f.sector, dpiitNumber: (f.dpiitNumber || '').trim() || undefined });
       if (role === 'investor') Object.assign(payload, { investorType: f.investorType, organisation: f.organisation, website: f.website || '', linkedinUrl: f.linkedinUrl || '', sectors });
       if (['government', 'finance', 'inspector'].includes(role)) Object.assign(payload, { departmentId: f.departmentId, designation: f.designation, officialEmail: f.officialEmail, employeeId: f.employeeId || '', reason: f.reason });
       await completeOnboarding(payload);
@@ -119,7 +119,7 @@ export function Onboarding() {
                     <div className="lp-grid2">
                       <Field label="Startup name"><input value={f.startupName || ''} onChange={set('startupName')} required /></Field>
                       <Field label="Sector"><input value={f.sector || ''} onChange={set('sector')} required placeholder="e.g. CleanTech" /></Field>
-                      <Field label="DPIIT recognition number" hint="PAN, GSTIN, CIN and bank details are collected later, in your profile."><input value={f.dpiitNumber || ''} onChange={set('dpiitNumber')} required /></Field>
+                      <Field label="DPIIT recognition number (optional)" hint="Add it now if you have it. PAN, GSTIN, CIN and bank details can be added later in your profile."><input value={f.dpiitNumber || ''} onChange={set('dpiitNumber')} /></Field>
                     </div>
                   )}
 

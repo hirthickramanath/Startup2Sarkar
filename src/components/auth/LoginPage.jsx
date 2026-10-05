@@ -88,9 +88,9 @@ export function GoogleButton({ clientId, onCredential, width = 240, text = 'sign
 const REG_FIELDS = [
   ['startupName', 'Startup name', 'text'], ['founderName', 'Founder name', 'text'], ['email', 'Work email', 'email'], ['phone', 'Mobile number', 'tel'],
   ['sector', 'Sector', 'text'], ['website', 'Website (optional)', 'url'],
-  ['dpiitNumber', 'DPIIT recognition no.', 'text'], ['cinLlpin', 'CIN / LLPIN', 'text'],
-  ['pan', 'Company PAN', 'text'], ['gstin', 'GSTIN', 'text'],
-  ['bankAccountNumber', 'Bank account number', 'text'], ['ifscCode', 'Bank IFSC', 'text'],
+  ['dpiitNumber', 'DPIIT recognition no. (optional)', 'text'], ['cinLlpin', 'CIN / LLPIN (optional)', 'text'],
+  ['pan', 'Company PAN (optional)', 'text'], ['gstin', 'GSTIN (optional)', 'text'],
+  ['bankAccountNumber', 'Bank account number (optional)', 'text'], ['ifscCode', 'Bank IFSC (optional, needed with the account number)', 'text'],
 ];
 
 function RegisterStartup({ onDone, onCancel }) {
@@ -117,7 +117,7 @@ function RegisterStartup({ onDone, onCancel }) {
       <div className="lp-card" style={{ textAlign: 'center', alignItems: 'center' }}>
         <CheckCircle2 size={40} color="var(--success-text)" />
         <h2>Registration received</h2>
-        <p className="lp-sub">Your DPIIT, CIN, PAN and GSTIN details are pending review by a platform administrator. You can sign in now and browse challenges; bidding unlocks after verification.</p>
+        <p className="lp-sub">A platform administrator will review your startup. You can sign in now and browse challenges, and add your DPIIT, CIN, PAN, GSTIN and bank details later from your profile. Bidding unlocks after verification.</p>
         <button className="lp-primary" style={{ width: '100%' }} onClick={onDone}>Go to sign in</button>
       </div>
     );
@@ -125,7 +125,7 @@ function RegisterStartup({ onDone, onCancel }) {
   return (
     <form className="lp-card" onSubmit={submit} style={{ maxWidth: 640 }}>
       <h2>Register your startup</h2>
-      <p className="lp-sub">Registering with Google or GitHub is quicker: you answer fewer questions now and add the rest later. Use this form if you prefer an email and password.</p>
+      <p className="lp-sub">Registering with Google or GitHub is quicker: you answer fewer questions now and add the rest later. Use this form if you prefer an email and password. DPIIT, CIN, PAN, GSTIN and bank details are optional for now: add them whenever you have them.</p>
       {err && <div className="lp-error" role="alert"><AlertCircle size={16} /> <span>{err}</span></div>}
       <div className="lp-grid2">
         {REG_FIELDS.map(([k, label, type]) => (
@@ -281,7 +281,7 @@ export function LoginPage({ initialRole = null }) {
                 <p className="lp-note">New here? Signing in with Google{role === 'startup' ? ' or GitHub' : ''} creates your account after a few quick questions.</p>
                 {emailForm && (
                   emailForm.sent
-                    ? <div className="lp-info" role="status"><Info size={16} style={{ flexShrink: 0, marginTop: 2 }} /><span>If that address can be used, we have sent a confirmation link. Open it to continue; it works once and expires in 30 minutes.</span></div>
+                    ? <div className="lp-info" role="status"><Info size={16} style={{ flexShrink: 0, marginTop: 2 }} /><span>If that address can be used, we have sent a confirmation link. It works once and expires in 30 minutes. Not there after a minute? Check your spam folder, then <button type="button" className="lp-link" onClick={() => setEmailForm({ ...emailForm, sent: false })}>send it again</button>. If it still does not arrive, sign in with Google instead.</span></div>
                     : (
                       <div style={{ display: 'grid', gap: 10, padding: 14, border: '1px solid var(--slate-200)', borderRadius: 'var(--radius-md)', background: 'var(--slate-50)' }}>
                         <strong style={{ fontSize: '.9rem' }}>Create an account with email</strong>

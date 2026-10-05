@@ -12,11 +12,27 @@ export interface EmailMessage {
 }
 
 export interface EmailProvider {
+  /** 'brevo' delivers real mail; 'development' only keeps messages in memory */
+  readonly kind?: 'brevo' | 'development';
   sendEmail(message: EmailMessage): Promise<{ success: boolean; messageId: string }>;
+}
+
+/** Turns a provider's rejection into plain advice an administrator can act on. */
+export function emailHints(error: string): string[] {
+  const e = error.toLowerCase();
+  const hints: string[] = [];
+  if (/unrecogni[sz]ed ip|ip address|not verified|ip not authori[sz]ed|authori[sz]ed ip/.test(e)) hints.push('Brevo is blocking this server\'s IP address. In Brevo open Security → Authorised IPs and click "Deactivate blocking" for API keys (this host\'s addresses change), or authorise the address. Also check the account owner\'s inbox for a "Validate your IP address" email.');
+  if (/sender/.test(e)) hints.push('The sender is not accepted. EMAIL_FROM must be exactly an address you added and verified in Brevo under Senders, Domains & Dedicated IPs.');
+  if (/key|api-key|unauthori[sz]ed|401/.test(e) && !hints.length) hints.push('Brevo did not accept the API key. Create a new key (SMTP & API → API Keys) and paste it into BREVO_API_KEY with no spaces.');
+  if (/activat|not allowed|permission|403|account/.test(e)) hints.push('The Brevo account may not be activated for sending yet. Check the account page and Brevo\'s emails to the account owner.');
+  if (/timeout|network|fetch|enotfound|econn/.test(e)) hints.push('This server could not reach Brevo. Try again in a minute.');
+  if (!hints.length) hints.push('Open Brevo → Transactional → Logs for the exact reason, and check the spam folder of the receiving address.');
+  return hints;
 }
 
 /** Sends through Brevo's transactional email API. Needs BREVO_API_KEY and a verified sender address (EMAIL_FROM). */
 export class BrevoEmailProvider implements EmailProvider {
+  readonly kind = 'brevo' as const;
   constructor(private apiKey: string, private from: { email: string; name: string }, private fetchImpl: typeof fetch = fetch) {}
   async sendEmail(message: EmailMessage): Promise<{ success: boolean; messageId: string }> {
     const res = await this.fetchImpl('https://api.brevo.com/v3/smtp/email', {
@@ -26,7 +42,10 @@ export class BrevoEmailProvider implements EmailProvider {
       signal: AbortSignal.timeout(8000)
     });
     const json: any = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`The email provider rejected the message (HTTP ${res.status})`);
+    if (!res.ok) {
+      const why = String(json.message || json.code || '').replace(/[\r\n]+/g, ' ').slice(0, 240);
+      throw new Error(`Brevo rejected the message (HTTP ${res.status}${why ? `: ${why}` : ''})`);
+    }
     return { success: true, messageId: String(json.messageId || '') };
   }
 }
@@ -40,6 +59,7 @@ export function createEmailProvider(): EmailProvider {
 }
 
 export class DevelopmentEmailProvider implements EmailProvider {
+  readonly kind = 'development' as const;
   private sentEmails: EmailMessage[] = [];
 
   async sendEmail(message: EmailMessage): Promise<{ success: boolean; messageId: string }> {
@@ -246,5 +266,28 @@ export class PfmsTreasuryAdapter implements TreasuryProvider {
   async recordDisbursement(request: DisbursementRequest): Promise<DisbursementResult> {
     // In production with accredited PFMS credentials, this would submit digitally signed XML/JSON to PFMS/NPCI Gateway
     throw new Error('PFMS direct electronic bridge requires accredited DSC token and staging credentials.');
+  }
+}
+
+
+/** Wraps any provider and records every attempt (without the message body) so a failure can always be found and explained. */
+export class LoggedEmailProvider implements EmailProvider {
+  constructor(private inner: EmailProvider, private db: { query: (sql: string, params?: any[]) => Promise<any> }) {}
+  get kind() { return this.inner.kind; }
+  private async record(m: EmailMessage, status: 'SENT' | 'FAILED', error: string | null, messageId: string | null) {
+    try {
+      await this.db.query('INSERT INTO email_log (id, to_email, subject, status, error, provider_message_id) VALUES ($1,$2,$3,$4,$5,$6)',
+        [`EML-${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`.toUpperCase(), m.to, m.subject.slice(0, 200), status, error ? error.slice(0, 400) : null, messageId]);
+    } catch { /* logging must never break the request that sent the email */ }
+  }
+  async sendEmail(message: EmailMessage): Promise<{ success: boolean; messageId: string }> {
+    try {
+      const r = await this.inner.sendEmail(message);
+      await this.record(message, 'SENT', null, r.messageId);
+      return r;
+    } catch (e: any) {
+      await this.record(message, 'FAILED', String(e?.message || e), null);
+      throw e;
+    }
   }
 }

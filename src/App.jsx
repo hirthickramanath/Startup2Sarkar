@@ -14,6 +14,7 @@ import { FinanceTaxLedger } from './components/roles/finance/FinanceTaxLedger';
 import { FinanceReconcile } from './components/roles/finance/FinanceReconcile';
 import { ScaleupPage, AdminAppeals } from './components/common/Pipeline';
 import { AdminStartups } from './components/roles/admin/AdminStartups';
+import { AdminEmail } from './components/roles/admin/AdminEmail';
 import { AdminAccessRequests } from './components/roles/admin/AdminAccess';
 import { AppShell } from './components/common/AppShell';
 import { ToastHost, useBusy } from './components/common/ui';
@@ -104,6 +105,7 @@ const ROUTES = [
   ['/admin/dashboard', 'Platform operations', () => <AdminDashboard />],
   ['/admin/startups', 'Startup verification', () => <AdminStartups />],
   ['/admin/appeals', 'Appeals', () => <AdminAppeals />],
+  ['/admin/email', 'Email', () => <AdminEmail />],
   ['/admin/scaleup', 'Scale-up pipeline', () => <ScaleupPage />],
   ['/government/scaleup', 'Scale-up pipeline', () => <ScaleupPage />],
   ['/admin/access-requests', 'Access requests', () => <AdminAccessRequests />],

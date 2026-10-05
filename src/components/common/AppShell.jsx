@@ -5,7 +5,7 @@ import {
   Building, Compass, FileText, CheckSquare, Shield, 
   CreditCard, AlertTriangle, Users, Settings, Bell, 
   Search, Cpu, ChevronRight, Menu, X, LogOut, 
-  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers, TrendingUp, KeyRound, ShieldCheck, MessageSquare
+  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers, TrendingUp, KeyRound, ShieldCheck, MessageSquare, Mail
 } from 'lucide-react';
 import { Logo, ThemeControls } from './ui';
 import { GlobalSearchModal } from './GlobalSearchModal';
@@ -103,6 +103,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           { label: 'Departments', route: '/admin/departments', icon: Layers },
           { label: 'AI Configuration', route: '/admin/ai', icon: Cpu },
           { label: 'Central Audit Logs', route: '/admin/audit', icon: Shield },
+          { label: 'Email', route: '/admin/email', icon: Mail },
           { label: 'System Settings', route: '/admin/settings', icon: Settings }
         ];
       default:

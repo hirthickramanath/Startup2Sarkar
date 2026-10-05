@@ -61,6 +61,7 @@ export async function adminRoutes(
   }
 ) {
   const { db, auditService, emailProvider } = opts;
+  const { emailHints } = await import('../adapters');
   /** Best-effort email to a user; a failed email never fails the decision itself. */
   const mailUser = async (userId: string, subject: string, text: string) => {
     try {
@@ -585,5 +586,35 @@ export async function adminRoutes(
     const count = async (table: string, col = 'created_at', extra = '') => { const r = (await db.query(`SELECT to_char(${col}, 'YYYY-MM') AS m, COUNT(*) AS c FROM ${table} WHERE ${col} >= date_trunc('month', CURRENT_TIMESTAMP) - INTERVAL '5 months' ${extra} GROUP BY 1`)).rows; return (m: string) => Number(r.find((x: any) => x.m === m)?.c || 0); };
     const users = await count('users'); const proposals = await count('proposals', 'created_at', "AND status <> 'DRAFT'"); const pilots = await count('pilots'); const challenges = await count('challenges');
     return reply.send({ months: months.map((m) => ({ month: m, users: users(m), proposals: proposals(m), pilots: pilots(m), challenges: challenges(m) })) });
+  });
+  // ───────────── Email: is it working, what failed, and a test button ─────────
+  app.get('/email/status', async (_request: FastifyRequest, reply: FastifyReply) => {
+    const kind = emailProvider.kind || 'development';
+    const recent = (await db.query('SELECT id, to_email, subject, status, error, created_at FROM email_log ORDER BY created_at DESC LIMIT 50')).rows;
+    const counts = (await db.query(`SELECT status, COUNT(*) AS c FROM email_log WHERE created_at > CURRENT_TIMESTAMP - INTERVAL '24 hours' GROUP BY status`)).rows;
+    const n = (st: string) => Number(counts.find((r: any) => r.status === st)?.c || 0);
+    return reply.send({
+      provider: kind, delivers: kind === 'brevo', sender: process.env.EMAIL_FROM || null, keySet: !!process.env.BREVO_API_KEY,
+      last24h: { sent: n('SENT'), failed: n('FAILED') },
+      recent: recent.map((r: any) => ({ id: r.id, to: r.to_email, subject: r.subject, status: r.status, error: r.error, at: r.created_at })),
+      lastFailureHints: recent.find((r: any) => r.status === 'FAILED')?.error ? emailHints(recent.find((r: any) => r.status === 'FAILED').error) : []
+    });
+  });
+
+  app.post('/email/test', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const parsed = z.object({ to: z.string().trim().email().max(200).optional() }).safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: 'Enter a valid email address.' });
+    const to = parsed.data.to || (await db.query('SELECT email FROM users WHERE id = $1', [authReq.user.userId])).rows[0].email;
+    let result: any;
+    try {
+      const r = await emailProvider.sendEmail({ to, subject: 'Startup2Sarkar test email', text: 'This is a test email from Startup2Sarkar. If you can read it, email delivery works.', html: '<p>This is a test email from Startup2Sarkar. If you can read it, email delivery works.</p>' });
+      result = { ok: true, to, delivers: emailProvider.kind === 'brevo', messageId: r.messageId };
+    } catch (e: any) {
+      const error = String(e?.message || e);
+      result = { ok: false, to, error, hints: emailHints(error) };
+    }
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: 'admin', action: 'EMAIL_TEST_SENT', entityType: 'SETTINGS', entityId: 'email', details: { ok: result.ok }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send(result);
   });
 }

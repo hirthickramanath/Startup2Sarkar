@@ -82,12 +82,17 @@ export async function runFlows({ base, shotsDir, tmpDir }) {
     t = await text();
     check('GitHub sign-up offers only the startup role', /GitHub sign-up is for startups/.test(t));
     const ins = await page.$$('form input:not([type=checkbox])');
-    const fill = { 'Mobile number': '9876543210', 'Startup name': 'Priya Robotics', Sector: 'Robotics', 'DPIIT recognition number': 'DIPP88001' };
+    const fill = { 'Mobile number': '9876543210', 'Startup name': 'Priya Robotics', Sector: 'Robotics' }; // the DPIIT number is optional, so it is left blank on purpose
     for (const el of ins) { const label = await el.evaluate((n) => (n.closest('label')?.innerText || '').split('\n')[0].trim()); if (fill[label]) await el.type(fill[label]); }
     await page.$eval('input[type=checkbox]', (c) => c.click());
     await click('button[type=submit]', /Create my account/); await page.waitForFunction(() => /startup\/dashboard/.test(location.pathname), { timeout: 15000 }); await wait(900);
-    check('a startup signs up through GitHub and reaches its dashboard', /startup\/dashboard/.test(page.url()));
+    check('a startup signs up through GitHub WITHOUT a DPIIT number and reaches its dashboard', /startup\/dashboard/.test(page.url()));
 
+    await fresh(); await open('/'); await click('button', /^\s*Startup/); await wait(400); await click('button', /Register/); await wait(500);
+    check('the startup registration form marks DPIIT, CIN, PAN, GSTIN and bank details as optional', (await text()).match(/\(optional/g)?.length >= 6);
+    await typeInto(/^Startup name/i, 'Basics Only Pvt Ltd'); await typeInto(/^Founder name/i, 'Bina Kulkarni'); await typeInto(/^Work email/i, 'bina@basics.example'); await typeInto(/^Mobile number/i, '9876500022'); await typeInto(/^Sector/i, 'AgriTech'); await typeInto(/^Password/i, 'Str0ng#Passw0rd!');
+    await click('button[type=submit]', /./); await wait(1800);
+    check('a startup registers with only its basics and is told it can add details later', await has(/Registration received/) && await has(/add your DPIIT, CIN, PAN, GSTIN and bank details later/));
     await fresh(); await page.goto(`${base}/__test/google-signup?email=asha@dept.example&name=Asha%20Verma`, { waitUntil: 'networkidle0' }); await wait(700);
     await click('button', /^\s*Government/); await wait(300);
     await page.select('select', 'DEPT-UI');
@@ -138,6 +143,9 @@ export async function runFlows({ base, shotsDir, tmpDir }) {
     await asSession('admin@ui.test'); await open('/admin/settings'); t = await text();
     check('admin settings has the two-person approval amount', /Two-person approval from claim amount/.test(t));
     check('admin settings has bank payment file layouts', /Bank payment file layouts/.test(t));
+    await open('/admin/email'); await click('button', /Send test email/); await wait(1500); t = await text();
+    check('the admin Email page shows the provider status and a working test button', /Email/.test(t) && /Test email sent/.test(t) && /Recent messages/.test(t));
+    await shot('08b-admin-email');
     await asSession('gov@ui.test'); await open('/government/pilots/PIL-UI'); t = await text();
     check('a government pilot page has Extend and Terminate', /Extend pilot/.test(t) && /Terminate pilot/.test(t));
     await asSession('rohan@ui.test'); await open('/account'); check('the account security page opens', await has(/Change password/));

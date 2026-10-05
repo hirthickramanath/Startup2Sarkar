@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url';
 import { DatabaseAdapter, getDatabase, runMigrations } from './db';
 import { AuditService } from './audit';
 import { SovereignAiProvider, AiProvider } from './ai';
-import { LocalStorageProvider, ManualTreasuryProvider, createEmailProvider, EmailProvider } from './adapters';
+import { LocalStorageProvider, ManualTreasuryProvider, createEmailProvider, EmailProvider, LoggedEmailProvider } from './adapters';
 import { JwksFetcher } from './security';
 
 import { authRoutes } from './routes/auth';
@@ -99,7 +99,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const aiProvider = options.aiProvider || new SovereignAiProvider();
   const storageProvider = new LocalStorageProvider();
   const treasuryProvider = new ManualTreasuryProvider();
-  const emailProvider = options.emailProvider ?? createEmailProvider();
+  const emailProvider: EmailProvider = new LoggedEmailProvider(options.emailProvider ?? createEmailProvider(), db);
+  if (process.env.NODE_ENV === 'production' && emailProvider.kind !== 'brevo') app.log.warn('Email is NOT configured (set BREVO_API_KEY and EMAIL_FROM). Confirmation links, password resets and invitations will not be delivered.');
 
   // 1. Security plugins ───────────────────────────────────────────────
   const allowedOrigins = (process.env.CORS_ORIGIN || '').split(',').map((o) => o.trim()).filter(Boolean);
@@ -151,7 +152,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
   // 4. API ───────────────────────────────────────────────────────────────
   app.register(async (api) => {
-    api.register(authRoutes, { prefix: '/auth', db, auditService, captchaFetch: options.captchaFetch });
+    api.register(authRoutes, { prefix: '/auth', db, auditService, captchaFetch: options.captchaFetch, emailProvider });
     api.register(identityRoutes, { prefix: '/auth', db, auditService, jwksFetcher: options.jwksFetcher, githubFetch: options.githubFetch, emailProvider, captchaFetch: options.captchaFetch });
     api.register(networkRoutes, { prefix: '/network', db, auditService });
     api.register(teamRoutes, { prefix: '/team', db, auditService, emailProvider });

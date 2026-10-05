@@ -63,7 +63,7 @@ const onboardingSchema = z.discriminatedUnion('role', [
     role: z.literal('startup'),
     startupName: z.string().trim().min(2).max(120),
     sector: z.string().trim().min(2).max(80),
-    dpiitNumber: z.string().trim().min(5).max(40)
+    dpiitNumber: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().trim().min(5).max(40).optional())
   }),
   z.object({
     ...commonOnboarding,
@@ -397,9 +397,9 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
     let deptId: string | null = null;
 
     if (d.role === 'startup') {
-      const dp = d.dpiitNumber.toUpperCase();
-      if (!isValidDpiitNumber(dp)) return reply.status(400).send({ error: 'That DPIIT recognition number is not in a valid format', details: ['dpiitNumber: invalid format'] });
-      if ((await db.query('SELECT 1 FROM organizations WHERE dpiit_number = $1', [dp])).rows.length > 0) {
+      const dp = d.dpiitNumber ? d.dpiitNumber.toUpperCase() : null; // optional for now
+      if (dp && !isValidDpiitNumber(dp)) return reply.status(400).send({ error: 'That DPIIT recognition number is not in a valid format', details: ['dpiitNumber: invalid format'] });
+      if (dp && (await db.query('SELECT 1 FROM organizations WHERE dpiit_number = $1', [dp])).rows.length > 0) {
         return reply.status(409).send({ error: 'A startup with this DPIIT number is already registered', code: 'DPIIT_EXISTS' });
       }
       orgId = id('ORG');
@@ -415,7 +415,7 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
         await tx.query(
           `INSERT INTO organizations (id, name, dpiit_number, founder_name, founder_email, founder_phone, sector, verification_status)
            VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING')`,
-          [orgId, d.startupName, d.dpiitNumber.toUpperCase(), d.name, email, d.phone, d.sector]
+          [orgId, d.startupName, d.dpiitNumber ? d.dpiitNumber.toUpperCase() : null, d.name, email, d.phone, d.sector]
         );
       }
       await tx.query(
@@ -600,6 +600,7 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
       await tx.query('DELETE FROM sessions WHERE user_id = $1', [row.user_id]); // every existing sign-in ends
       await tx.query('DELETE FROM password_resets WHERE user_id = $1', [row.user_id]);
     });
+    try { await opts.emailProvider.sendEmail({ to: (await db.query('SELECT email FROM users WHERE id = $1', [user.id])).rows[0].email, subject: 'Your password was changed', text: `Hello ${user.name},\n\nThe password for your Startup2Sarkar account was just reset. If this was not you, contact your administrator immediately.\n\nStartup2Sarkar`, html: `<p>Hello ${esc(user.name)},</p><p>The password for your Startup2Sarkar account was just reset. If this was not you, contact your administrator immediately.</p>` }); } catch { /* recorded in the email log */ }
     await auditService.logEvent({ actorId: user.id, actorName: user.name, actorRole: user.role, action: 'PASSWORD_RESET_COMPLETED', entityType: 'USER', entityId: user.id, ...meta(request) });
     return reply.send({ success: true });
   });
