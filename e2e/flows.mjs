@@ -201,15 +201,57 @@ export async function runFlows({ base, shotsDir, tmpDir }) {
     await page.type('#ad', 'The documented deployments were not scored; please re-evaluate.'); await click('button', /^Uphold$/); await wait(1500);
     check('an administrator upholds the appeal', await has(/Upheld/));
 
-    // ───────── Staff two-step verification is forced, and enrolment works ─────────
+    // ───────── Several users per startup ─────────
+    await asSession('rohan@ui.test'); await open('/startup/team');
+    check('the owner sees the team page with an invite form', await has(/Your team/) && await has(/Invite a teammate/));
+    await typeInto(/Teammate email/i, 'meera@greenfield.example'); await click('button', /Send invitation/); await wait(1500);
+    const inviteLink = await page.evaluate(() => [...document.querySelectorAll('code')].map((c) => c.innerText).find((t) => /join\?token=/.test(t)) || '');
+    check('an invitation is created with a link the owner can share', /join\?token=[0-9a-f]{64}/.test(inviteLink));
+    await fresh(); await page.goto(inviteLink.replace(/^https?:\/\/[^/]+/, base), { waitUntil: 'networkidle0' }); await wait(900);
+    check('the invitation page names the startup, with no intro in the way', /\/join/.test(page.url()) && await has(/Join Greenfield Labs/));
+    await typeInto(/Your full name/i, 'Meera Pillai'); await typeInto(/^Password/i, 'Str0ng#Passw0rd!'); await typeInto(/Repeat it/i, 'Str0ng#Passw0rd!');
+    await click('button[type=submit]', /Join the team/); await page.waitForFunction(() => /startup\/dashboard/.test(location.pathname), { timeout: 15000 }); await wait(900);
+    check('the teammate joins and lands on the startup dashboard', /startup\/dashboard/.test(page.url()) && await has(/Greenfield Labs/));
+    await open('/startup/profile');
+    check('a teammate cannot see registration, documents or investor settings', await has(/Only the account owner can change these/) && !(await has(/Verification documents/)));
+    await open('/startup/team'); check('a teammate cannot invite or remove people', await has(/Only the account owner can invite or remove teammates/) && !(await has(/Send invitation/)));
+
+    // ───────── In-app messaging ─────────
+    await open('/messages'); await click('button', /New conversation/); await wait(400);
+    await typeInto(/^Subject/i, 'Site access for installation'); await typeInto(/^Message/i, 'When can we start installing the sensors at the Pune ward?');
+    await click('button', /^Send$/); await wait(1500);
+    check('a teammate starts a conversation with the department', await has(/Site access for installation/) && await has(/sensors at the Pune ward/));
+    await asSession('gov@ui.test'); await open('/government/dashboard'); await wait(1200);
+    const badge = await page.evaluate(() => [...document.querySelectorAll('.shell-aside button, aside button')].find((b) => /Messages/.test(b.innerText))?.innerText || '');
+    check('the department sees an unread count on Messages', /Messages\s*\n?\s*1/.test(badge.replace(/\s+/g, ' ').replace('Messages 1', 'Messages\n1')) || /1/.test(badge));
+    await open('/messages'); await click('button', /Site access for installation/); await wait(900);
+    await typeInto(/Write a message/i, 'Friday works. Please bring site passes for the team.'); await page.click('button[aria-label="Send"]'); await wait(1400);
+    check('an official replies', await has(/Friday works/));
+    await asSession('rohan@ui.test'); await open('/messages'); await click('button', /Site access for installation/); await wait(900);
+    check('the startup sees the reply, from the department', await has(/Friday works/) && await has(/Department/));
+    await shot('08-messages');
+
+    // ───────── Staff two-step verification is forced, can be skipped for now, and enrolment works ─────────
     await page.evaluate(() => fetch('/__test/mfa?on=true'));
     await asSession('gov@ui.test'); await wait(800);
-    check('staff without two-step verification see the enrolment screen', await has(/Turn on two-step verification/)); await shot('07-mfa-enrol');
+    check('staff without two-step verification see the enrolment screen', await has(/Turn on two-step verification/)); await shot('09-mfa-enrol');
+    check('the screen offers Skip for now', await has(/Skip for now/));
+    await page.waitForFunction(() => document.querySelector('img[alt^="QR"]') || /Copy key/.test(document.body.innerText), { timeout: 8000 }).catch(() => {});
+    await click('button[type=submit]', /Turn on and continue/); await wait(500);
+    check('pressing Continue with nothing filled in explains what is missing, right next to the button', await has(/Tick the box above to confirm you have saved your recovery codes/));
+    await page.$eval('input[type=checkbox]', (c) => c.click());
+    await page.type('input.lp-code', '000000'); await click('button[type=submit]', /Turn on and continue/); await wait(1200);
+    check('a wrong code shows a clear message next to the button', await has(/Invalid verification code/) && await has(/newest one/));
+    const errVisible = await page.evaluate(() => { const e = document.querySelector('.lp-error'); if (!e) return false; const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; });
+    check('the error is on screen without scrolling', errVisible);
+    await click('button', /Skip for now/); await wait(1800);
+    check('skipping opens the workspace, with a reminder banner', /government\/dashboard/.test(page.url()) && !(await has(/Turn on two-step verification\s+Dr\./)) && await has(/Please turn on two-step verification/));
+    await fresh(); await page.evaluate(() => fetch('/__test/mfa?on=true')); await asSession('fin@ui.test'); await wait(800);
     await page.waitForFunction(() => document.querySelector('img[alt^="QR"]') || /Copy key/.test(document.body.innerText), { timeout: 8000 }).catch(() => {});
     await page.$eval('input[type=checkbox]', (c) => c.click());
-    const code = await page.evaluate(async () => (await (await fetch('/__test/totp?email=gov@ui.test')).json()).code);
+    const code = await page.evaluate(async () => (await (await fetch('/__test/totp?email=fin@ui.test')).json()).code);
     await page.type('input.lp-code', code); await click('button[type=submit]', /Turn on and continue/); await wait(2000);
-    check('after enrolling, the staff member reaches the workspace', /government\/dashboard/.test(page.url()) && !(await has(/Turn on two-step verification/)));
+    check('after enrolling, the staff member reaches the workspace', /finance\/dashboard/.test(page.url()) && !(await has(/Turn on two-step verification\s+Sunita/)));
     await page.evaluate(() => fetch('/__test/mfa?on=false'));
 
     }

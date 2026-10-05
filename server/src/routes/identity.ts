@@ -8,7 +8,7 @@ import { verifyCaptcha } from '../captcha';
 import {
   AuthenticatedRequest, JwksFetcher, RoleName, createAuthMiddleware, encryptField, hashPassword, isValidCinOrLlpin,
   isValidDpiitNumber, isValidGstin, isValidIfsc, isValidPan, maskBankAccount, maskPan, signBlob, signToken,
-  validatePasswordStrength, verifyBlob, verifyGoogleIdToken, staffMfaRequired, STAFF_ROLES
+  validatePasswordStrength, verifyBlob, verifyGoogleIdToken, staffMfaRequired, STAFF_ROLES, mfaEnrolmentRequired, MFA_MAX_SKIPS, isOrgOwner
 } from '../security';
 
 /**
@@ -111,7 +111,8 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
     id: u.id, name: u.name, email: u.email, role: u.role, status: u.status, designation: u.designation,
     departmentId: u.department_id, organizationId: u.organization_id, mfaEnabled: u.mfa_enabled,
     mustChangePassword: false, mfaEnrollmentRequired: PRIVILEGED.includes(u.role) && !u.mfa_enabled && u.status === 'ACTIVE',
-    mfaEnrolRequired: staffMfaRequired() && STAFF_ROLES.includes(u.role) && !u.mfa_enabled && u.status === 'ACTIVE'
+    mfaEnrolRequired: mfaEnrolmentRequired(u), mfaSkipsLeft: Math.max(0, MFA_MAX_SKIPS - Number(u.mfa_skip_count || 0)),
+    orgRole: u.role === 'startup' ? (u.org_role === 'MEMBER' ? 'MEMBER' : 'OWNER') : null
   });
 
   async function startSession(user: any, request: FastifyRequest, reply: FastifyReply, action: string, provider: Provider) {
@@ -513,6 +514,7 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
 
   app.put('/organization', { preHandler: [authenticate] }, async (request, reply) => {
     const authReq = request as AuthenticatedRequest;
+    if (authReq.user.role === 'startup' && !(await isOrgOwner(db, authReq.user.userId))) return reply.status(403).send({ error: 'Only the account owner can change the startup\'s registration details.', code: 'OWNER_ONLY' });
     if (authReq.user.role !== 'startup' || !authReq.user.organizationId) return reply.status(403).send({ error: 'Only a startup can update its registration', code: 'INSUFFICIENT_ROLE_PERMISSIONS' });
     const parsed = orgUpdateSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'Please check the highlighted answers', details: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) });
@@ -636,5 +638,38 @@ export async function identityRoutes(app: FastifyInstance, opts: IdentityOptions
     if (!row) return reply.redirect('/login?error=verify_failed');
     reply.setCookie(SIGNUP_COOKIE, signBlob({ p: 'email', s: row.token_hash, pid: row.token_hash, e: row.email, n: row.name, a: null, u: null, l: null }, 1800), cookieOpts(1800));
     return reply.redirect('/signup');
+  });
+  // ───────────── Joining a startup by invitation ─────────────
+  const inviteRow = async (token: string) => token.length >= 20 ? (await db.query(
+    `SELECT i.id, i.email, i.organization_id, o.name AS org_name, u.name AS inviter FROM team_invites i JOIN organizations o ON o.id = i.organization_id LEFT JOIN users u ON u.id = i.invited_by_user_id
+     WHERE i.token_hash = $1 AND i.status = 'PENDING' AND i.expires_at > CURRENT_TIMESTAMP`, [sha(token)])).rows[0] : null;
+
+  app.get('/join-info', AUTH_RATE, async (request, reply) => {
+    const row = await inviteRow(String((request.query as any).token || ''));
+    if (!row) return reply.status(404).send({ error: 'This invitation is invalid or has expired. Ask the account owner to send a new one.', code: 'INVITE_INVALID' });
+    return reply.send({ email: row.email, organizationName: row.org_name, invitedBy: row.inviter || 'the account owner' });
+  });
+
+  app.post('/join', strict(10, '10 minutes'), async (request, reply) => {
+    if (!(await verifyCaptcha((request.body as any)?.captchaToken, request.ip || '', opts.captchaFetch))) return reply.status(400).send({ error: 'Please complete the human check and try again.', code: 'CAPTCHA_FAILED' });
+    const parsed = z.object({ token: z.string().min(20).max(200), name: z.string().trim().min(2).max(120), password: z.string().min(1).max(200), phone: z.string().trim().max(20).optional() }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Enter your name and a password.' });
+    const row = await inviteRow(parsed.data.token);
+    if (!row) return reply.status(404).send({ error: 'This invitation is invalid or has expired. Ask the account owner to send a new one.', code: 'INVITE_INVALID' });
+    const strength = validatePasswordStrength(parsed.data.password);
+    if (!strength.valid) return reply.status(400).send({ error: 'Choose a stronger password', details: strength.errors, code: 'WEAK_PASSWORD' });
+    if ((await db.query('SELECT 1 FROM users WHERE LOWER(email) = LOWER($1)', [row.email])).rows.length) return reply.status(409).send({ error: 'That email already has an account.', code: 'EMAIL_IN_USE' });
+    const userId = id('USR');
+    await db.transaction(async (tx) => {
+      await tx.query(
+        `INSERT INTO users (id, email, password_hash, role, name, designation, organization_id, auth_provider, has_password, phone, status, org_role)
+         VALUES ($1,$2,$3,'startup',$4,'Team member',$5,'local',TRUE,$6,'ACTIVE','MEMBER')`,
+        [userId, row.email, await hashPassword(parsed.data.password), parsed.data.name, row.organization_id, parsed.data.phone || null]
+      );
+      await tx.query(`UPDATE team_invites SET status = 'ACCEPTED' WHERE id = $1`, [row.id]);
+    });
+    await auditService.logEvent({ actorId: userId, actorName: parsed.data.name, actorRole: 'startup', action: 'TEAM_MEMBER_JOINED', entityType: 'ORGANIZATION', entityId: row.organization_id, details: { inviteId: row.id }, ...meta(request) });
+    const user = (await db.query('SELECT * FROM users WHERE id = $1', [userId])).rows[0];
+    return reply.status(201).send(await startSession(user, request, reply, 'AUTH_TEAM_JOIN', 'email' as any));
   });
 }

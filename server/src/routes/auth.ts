@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { DatabaseAdapter } from '../db';
 import { AuditService } from '../audit';
 import { verifyCaptcha } from '../captcha';
-import { hashPassword, verifyPassword, validatePasswordStrength, generateMfaSecret, verifyTotpToken, generateRecoveryCodes, verifyRecoveryCode, signToken, verifyToken, isValidPan, isValidGstin, isValidCinOrLlpin, isValidDpiitNumber, isValidIfsc, encryptField, maskBankAccount, maskPan, sha256, AuthenticatedRequest, createAuthMiddleware, requireRole, staffMfaRequired, STAFF_ROLES } from '../security';
+import { hashPassword, verifyPassword, validatePasswordStrength, generateMfaSecret, verifyTotpToken, generateRecoveryCodes, verifyRecoveryCode, signToken, verifyToken, isValidPan, isValidGstin, isValidCinOrLlpin, isValidDpiitNumber, isValidIfsc, encryptField, maskBankAccount, maskPan, sha256, AuthenticatedRequest, createAuthMiddleware, requireRole, staffMfaRequired, STAFF_ROLES, mfaEnrolmentRequired, MFA_MAX_SKIPS, MFA_SKIP_HOURS } from '../security';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -79,6 +79,12 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
     }
 
     const user = userRes.rows[0];
+
+    // A deactivated account (removed teammate, or one an administrator switched off) can never sign in again
+    if (!user.is_active) {
+      await auditService.logEvent({ actorId: user.id, actorName: user.name, actorRole: role, action: 'AUTH_LOGIN_BLOCKED_INACTIVE', entityType: 'AUTH', entityId: user.id, details: { targetRole: role }, ipAddress: ip, userAgent });
+      return reply.status(401).send(genericAuthError);
+    }
 
     // Check account lockout
     if (user.lockout_until && new Date(user.lockout_until) > new Date()) {
@@ -215,7 +221,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
         mfaEnabled: user.mfa_enabled,
         mustChangePassword: user.must_change_password,
         mfaEnrollmentRequired: PRIVILEGED.includes(user.role) && !user.mfa_enabled,
-        mfaEnrolRequired: staffMfaRequired() && STAFF_ROLES.includes(user.role) && !user.mfa_enabled
+        mfaEnrolRequired: mfaEnrolmentRequired(user), mfaSkipsLeft: Math.max(0, MFA_MAX_SKIPS - Number(user.mfa_skip_count || 0)), orgRole: user.role === 'startup' ? (user.org_role === 'MEMBER' ? 'MEMBER' : 'OWNER') : null
       },
       token
     });
@@ -332,6 +338,19 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
   });
 
   // 4. MFA Enable Confirmation
+  // "Skip for now": a limited postponement of the forced two-step enrolment (not a way to switch it off)
+  app.post('/mfa/skip', { preHandler: [authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const authReq = request as AuthenticatedRequest;
+    const u = (await db.query('SELECT role, mfa_enabled, mfa_skip_count, mfa_snoozed_until, status FROM users WHERE id = $1', [authReq.user.userId])).rows[0];
+    if (!u || !STAFF_ROLES.includes(u.role) || u.mfa_enabled) return reply.status(409).send({ error: 'Nothing to skip: two-step verification is not required for this account, or is already on.', code: 'NOTHING_TO_SKIP' });
+    const used = Number(u.mfa_skip_count || 0);
+    if (used >= MFA_MAX_SKIPS) return reply.status(403).send({ error: 'You have used all your skips. Please turn on two-step verification to continue.', code: 'MFA_SKIP_LIMIT' });
+    const until = new Date(Date.now() + MFA_SKIP_HOURS * 3600 * 1000);
+    await db.query('UPDATE users SET mfa_snoozed_until = $1, mfa_skip_count = mfa_skip_count + 1 WHERE id = $2', [until, authReq.user.userId]);
+    await auditService.logEvent({ actorId: authReq.user.userId, actorName: authReq.user.name, actorRole: authReq.user.role, action: 'AUTH_MFA_ENROLMENT_SKIPPED', entityType: 'SECURITY', entityId: authReq.user.userId, details: { skipsUsed: used + 1, until: until.toISOString() }, ipAddress: request.ip || '127.0.0.1', userAgent: request.headers['user-agent'] || 'Unknown' });
+    return reply.send({ success: true, skipsLeft: MFA_MAX_SKIPS - used - 1, until: until.toISOString() });
+  });
+
   app.post('/mfa/enable', { preHandler: [authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const authReq = request as AuthenticatedRequest;
     const { code } = request.body as { code: string };
@@ -480,7 +499,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
     const authReq = request as AuthenticatedRequest;
     const res = await db.query(
       `SELECT u.id, u.email, u.role, u.name, u.designation, u.department_id, u.organization_id,
-              u.mfa_enabled, u.must_change_password, u.auth_provider, u.avatar_url, u.status, u.has_password, u.phone,
+              u.mfa_enabled, u.mfa_snoozed_until, u.mfa_skip_count, u.org_role, u.must_change_password, u.auth_provider, u.avatar_url, u.status, u.has_password, u.phone,
               d.name as department_name, d.code as department_code,
               o.name as organization_name, o.verification_status, o.dpiit_number
        FROM users u
@@ -495,7 +514,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: DatabaseAdapt
     }
 
     const u = res.rows[0];
-    return reply.send({ user: { ...u, mfa_enrol_required: staffMfaRequired() && STAFF_ROLES.includes(u.role) && !u.mfa_enabled } });
+    return reply.send({ user: { ...u, mfa_enrol_required: mfaEnrolmentRequired(u), mfa_skips_left: Math.max(0, MFA_MAX_SKIPS - Number(u.mfa_skip_count || 0)), org_role: u.role === 'startup' ? (u.org_role === 'MEMBER' ? 'MEMBER' : 'OWNER') : null } });
   });
 
   // 7. Logout Endpoint

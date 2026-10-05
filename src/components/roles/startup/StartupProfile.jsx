@@ -104,6 +104,8 @@ function InvestorVisibility({ s }) {
 }
 
 export function StartupProfile() {
+  const { currentUser } = useApp();
+  const owner = currentUser?.orgRole !== 'MEMBER';
   const { state } = useApp();
   const s = state.startups[0];
   const st = STATUS[s.verificationStatus] || STATUS.PENDING;
@@ -129,11 +131,11 @@ export function StartupProfile() {
           <Field label="Sector">{s.sector !== 'Unspecified' ? s.sector : ''}</Field>
         </div>
       </section>
-      <RegistrationForm s={s} />
-      <DocumentsPanel />
+      {owner ? <RegistrationForm s={s} /> : <section style={cardStyle}><strong>Registration, documents and investor visibility</strong><p style={{ margin: 0, fontSize: '.86rem', color: 'var(--slate-600)' }}>Only the account owner can change these. Ask them if something needs updating.</p></section>}
+      {owner && <DocumentsPanel />}
       <LinkedAccounts />
       <ProfileLinks />
-      <InvestorVisibility s={s} />
+      {owner && <InvestorVisibility s={s} />}
     </div>
   );
 }

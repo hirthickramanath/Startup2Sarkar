@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import { messagesApi } from '../../api';
 import { useApp } from '../../store';
 import { 
   Building, Compass, FileText, CheckSquare, Shield, 
   CreditCard, AlertTriangle, Users, Settings, Bell, 
   Search, Cpu, ChevronRight, Menu, X, LogOut, 
-  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers, TrendingUp, KeyRound, ShieldCheck
+  HelpCircle, RefreshCw, Sparkles, CheckCircle2, Bot, Layers, TrendingUp, KeyRound, ShieldCheck, MessageSquare
 } from 'lucide-react';
 import { Logo, ThemeControls } from './ui';
 import { GlobalSearchModal } from './GlobalSearchModal';
@@ -26,6 +27,13 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   useEffect(() => { setMobileMenuOpen(false); }, [currentRoute]);
+  const [unreadMsgs, setUnreadMsgs] = useState(0);
+  useEffect(() => {
+    if (!['startup', 'government'].includes(currentUser?.role)) return undefined;
+    const load = () => messagesApi.unread().then((r) => setUnreadMsgs(r.unread)).catch(() => {});
+    load(); const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, [currentUser?.role, currentRoute]);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 
   // Filter unread notifications for current role
@@ -44,6 +52,7 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           { label: 'AI Pilot Manager', route: '/government/pilot-manager', icon: Cpu, badge: 'Advisory' },
           { label: 'Monitored Pilots', route: '/government/pilots', icon: FileText },
           { label: 'Scale-up Pipeline', route: '/government/scaleup', icon: TrendingUp },
+          { label: 'Messages', route: '/messages', icon: MessageSquare, count: unreadMsgs },
           { label: 'Sovereign Audit Trail', route: '/government/audit', icon: Shield }
         ];
       case 'startup':
@@ -53,6 +62,8 @@ export function AppShell({ children, pageTitle = "Dashboard", breadcrumbs = [] }
           { label: 'Submit Proposal', route: '/startup/proposals/create', icon: FileText },
           { label: 'Proposal Tracking', route: '/startup/proposals', icon: Layers },
           { label: 'Pilot Workspace', route: '/startup/pilots', icon: CheckSquare },
+          { label: 'Messages', route: '/messages', icon: MessageSquare, count: unreadMsgs },
+          { label: 'Team', route: '/startup/team', icon: Users },
           { label: 'Payment Status', route: '/startup/payments', icon: CreditCard },
           { label: 'Startup Profile', route: '/startup/profile', icon: Users }
         ];

@@ -82,6 +82,9 @@ export const authApi = {
   accessRequest: () => api.get('/auth/access-request'),
   profileLinks: () => api.get('/auth/profile-links'),
   saveProfileLinks: (links) => api.put('/auth/profile-links', { links }),
+  skipMfa: () => api.post('/auth/mfa/skip'),
+  joinInfo: (token) => api.get(`/auth/join-info?token=${encodeURIComponent(token)}`),
+  join: (d) => api.post('/auth/join', d),
   forgotPassword: (email, captchaToken) => api.post('/auth/forgot-password', { email, captchaToken }),
   signupEmail: (d) => api.post('/auth/signup-email', d),
   resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
@@ -241,4 +244,20 @@ export const pipelineApi = {
     if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'The file could not be created'); }
     return res.text();
   },
+};
+
+export const teamApi = {
+  get: () => api.get('/team'),
+  invite: (email) => api.post('/team/invites', { email }),
+  revoke: (id) => api.del(`/team/invites/${id}`),
+  remove: (id) => api.del(`/team/members/${id}`),
+};
+export const messagesApi = {
+  threads: () => api.get('/messages/threads'),
+  unread: () => api.get('/messages/unread'),
+  thread: (id) => api.get(`/messages/threads/${id}`),
+  start: (d) => api.post('/messages/threads', d),
+  send: (id, body) => api.post(`/messages/threads/${id}/messages`, { body }),
+  close: (id) => api.post(`/messages/threads/${id}/close`),
+  reopen: (id) => api.post(`/messages/threads/${id}/reopen`),
 };

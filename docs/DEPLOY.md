@@ -63,11 +63,15 @@ New releases add database tables and columns automatically on start (migrations 
 
 ## 3c. Two-step verification for staff
 
-In production every government, finance, inspector and admin account must turn on two-step verification before it can reach any data; the first administrator is asked on first sign-in. Keep the recovery codes somewhere safe.
+In production every government, finance, inspector and admin account must turn on two-step verification before it can reach any data; the first administrator is asked on first sign-in. The enrolment screen has a **Skip for now** button: each skip postpones the requirement for 24 hours, and after `MFA_MAX_SKIPS` skips (default 5) it is required. Skips are recorded in the audit trail. Keep the recovery codes somewhere safe. If a code is rejected, the usual cause is the phone's clock: set its date and time to automatic.
 
 ## 3d. Bank payment files
 
 Each bank accepts bulk transfers in its own layout. In **Admin → System settings → Bank payment file layouts** add one layout per bank, copying the column order from the template your bank gives you. Finance then chooses a layout when exporting from **Payment claims → Bank payment file**. The file contains account numbers, so treat it like cash: download it, upload it to the bank, and delete it.
+
+## 3e. Startup teams
+
+A startup's account owner can invite teammates from **Team** (up to 10 people). Invitations are emailed when Brevo is set up; otherwise the owner copies the link shown after inviting and sends it themselves. Invitations expire after 7 days.
 
 ## 4. After it is live
 

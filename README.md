@@ -4,7 +4,7 @@
 
 It is built to replace the usual mix of emails, spreadsheets and paper files in startup-led pilots with one system where **money is exact, every decision has a named person, and nobody sees data they are not meant to see.**
 
-> **Status: a serious prototype.** It runs, it is tested (135 automated backend tests, plus a 46-check browser suite), and it has been exercised end to end in a real browser. It has **not** had an independent security or accessibility audit, and has not been load-tested. Read [Known limits](#known-limits-and-roadmap) before putting real money or citizen data through it.
+> **Status: a serious prototype.** It runs, it is tested (148 automated backend tests, plus a 61-check browser suite), and it has been exercised end to end in a real browser. It has **not** had an independent security or accessibility audit, and has not been load-tested. Read [Known limits](#known-limits-and-roadmap) before putting real money or citizen data through it.
 
 ---
 
@@ -51,8 +51,10 @@ It is built to replace the usual mix of emails, spreadsheets and paper files in 
 - **Bank reconciliation**: upload a bank statement CSV; cheques and transfers are matched to claims by number and amount; finance reviews, then applies.
 - **Bank payment files for any bank**: finance exports approved electronic payments as a bulk-transfer file. Because every bank asks for a different layout, administrators define the layout for each bank (column order, headings, separator, date format, fixed columns); two bank-neutral layouts are built in. Account numbers are decrypted only to build the file, never written to the audit trail, and spreadsheet-formula injection is neutralised.
 - **Scale-up pipeline and appeals**: an official recommends a validated pilot for full rollout and a different person decides; a startup can appeal a rejection once within 15 days to an administrator outside the department, and an upheld appeal returns the proposal to review.
+- **Several users per startup**: the account owner invites teammates by email (or by a link they can share, for when email is not set up). Teammates work on proposals, pilots, claims and messages; only the owner can change registration and bank details, upload verification documents, manage investor visibility and manage the team. Up to 10 people per startup. Removing someone signs them out at once and blocks their sign-in.
+- **In-app messaging**: conversations between a startup's team and the department that runs its pilot, with unread counts. It is limited to pilots on purpose: before an award, questions go through the public Q&A on the challenge so no bidder has a private line to the department. Audit logs record that a conversation happened, never what was said.
 - **Trend charts** on the finance and admin dashboards.
-- **Account security**: forgot-password by email, change password, **mandatory two-step verification for staff in production** (a full-screen enrolment with QR code and recovery codes, enforced on the server), and an optional **Cloudflare Turnstile** human check on sign-up and reset.
+- **Account security**: forgot-password by email, change password, **mandatory two-step verification for staff in production** (a full-screen enrolment with QR code and recovery codes, enforced on the server; staff can postpone it with **Skip for now**, up to 5 times for 24 hours each, after which it is required), and an optional **Cloudflare Turnstile** human check on sign-up and reset.
 - **AI assistant** that answers from the signed-in user's own records (rules engine; optional Gemini, fenced in).
 - **Themes**: three named themes (Graphite, Burst, Meadow), each in light and dark, remembered per browser; skippable brand intro animation.
 - Docker, Render blueprint, CI workflow, OpenAPI docs (development). The brand intro (drawn in the app's own theme colours) plays on every normal page load and can be skipped; a logo pack lives in `public/logo/`. The signed-in shell is responsive: on a phone the navigation is a slide-in drawer.
@@ -90,8 +92,8 @@ server/src/
   objectstore.ts    private document storage (Supabase Storage or local disk)
   captcha.ts        Cloudflare Turnstile verification (fails closed)
   routes/           auth · identity · challenges · proposals · pilots · finance · admin · network · assistant · platform
-  migrations/       001_initial_schema.sql · 002_identity.sql · 003_payments.sql · 004_email.sql · 005_management.sql · 006_platform.sql · 007_pipeline.sql  (idempotent, run on every start)
-server/tests/       api-integration · idor-security · domain-unit · s2s · identity · payments · management · platform · pipeline
+  migrations/       001_initial_schema.sql · 002_identity.sql · 003_payments.sql · 004_email.sql · 005_management.sql · 006_platform.sql · 007_pipeline.sql · 008_team_messages.sql  (idempotent, run on every start)
+server/tests/       api-integration · idor-security · domain-unit · s2s · identity · payments · management · platform · pipeline · team
 e2e/                browser suite (Puppeteer): lib, test server, flows, runner
 src/
   main.jsx, App.jsx           providers, route table, role gate, error boundary
@@ -141,6 +143,7 @@ All settings are environment variables. Copy `.env.example` to `.env` for local 
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | optional | Turns on the human check on sign-up, onboarding, registration and password reset |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_BUCKET` | optional | Persistent private storage for uploaded documents (otherwise local disk under `UPLOAD_DIR`) |
 | `REQUIRE_STAFF_MFA` | optional | Staff two-step verification: on by default in production, `false` to disable |
+| `MFA_MAX_SKIPS` | optional | How many times staff may "Skip for now" on the enrolment screen (default 5, 24 hours each) |
 | `BREVO_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME` | optional | Enables forgot-password and decision emails through Brevo (needs a verified sender) |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | optional | Enables the Gemini-backed assistant (otherwise the built-in rules engine is used) |
 | `MARKET_DATA` | optional | `off` disables the exchange-rate feed |
@@ -177,7 +180,7 @@ With `GEMINI_API_KEY` set, the assistant uses Gemini, **fenced in**: no tools (n
 Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cookie (or `Authorization: Bearer <token>`). Interactive OpenAPI docs are served at `/docs` in development. The tables below are **generated from the route code**; a role list means only those roles may call the endpoint, and every role-less authenticated route still applies per-record checks inside the handler.
 
 <details>
-<summary><b>/api/v1/auth</b> (28 endpoints)</summary>
+<summary><b>/api/v1/auth</b> (31 endpoints)</summary>
 
 | Method | Path | Who may call it |
 |---|---|---|
@@ -191,12 +194,15 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 | `POST` | `/api/v1/auth/google/link` | any signed-in user |
 | `GET` | `/api/v1/auth/identities` | any signed-in user |
 | `DELETE` | `/api/v1/auth/identities/:provider` | any signed-in user |
+| `POST` | `/api/v1/auth/join` | public |
+| `GET` | `/api/v1/auth/join-info` | public |
 | `POST` | `/api/v1/auth/login` | public |
 | `POST` | `/api/v1/auth/logout` | any signed-in user |
 | `POST` | `/api/v1/auth/logout-all` | any signed-in user |
 | `GET` | `/api/v1/auth/me` | any signed-in user |
 | `POST` | `/api/v1/auth/mfa/enable` | any signed-in user |
 | `POST` | `/api/v1/auth/mfa/setup` | any signed-in user |
+| `POST` | `/api/v1/auth/mfa/skip` | any signed-in user |
 | `POST` | `/api/v1/auth/mfa/verify` | public |
 | `GET` | `/api/v1/auth/onboarding` | public |
 | `POST` | `/api/v1/auth/onboarding` | public |
@@ -362,6 +368,33 @@ Base path `/api/v1`. JSON in and out. Authentication is an HttpOnly session cook
 </details>
 
 <details>
+<summary><b>/api/v1/team</b> (4 endpoints)</summary>
+
+| Method | Path | Who may call it |
+|---|---|---|
+| `GET` | `/api/v1/team` | startup (owner-only actions are enforced) |
+| `POST` | `/api/v1/team/invites` | startup (owner-only actions are enforced) |
+| `DELETE` | `/api/v1/team/invites/:id` | startup (owner-only actions are enforced) |
+| `DELETE` | `/api/v1/team/members/:id` | startup (owner-only actions are enforced) |
+
+</details>
+
+<details>
+<summary><b>/api/v1/messages</b> (7 endpoints)</summary>
+
+| Method | Path | Who may call it |
+|---|---|---|
+| `GET` | `/api/v1/messages/threads` | startup, government (own side of a pilot) |
+| `POST` | `/api/v1/messages/threads` | startup, government (own side of a pilot) |
+| `GET` | `/api/v1/messages/threads/:id` | startup, government (own side of a pilot) |
+| `POST` | `/api/v1/messages/threads/:id/close` | startup, government (own side of a pilot) |
+| `POST` | `/api/v1/messages/threads/:id/messages` | startup, government (own side of a pilot) |
+| `POST` | `/api/v1/messages/threads/:id/reopen` | startup, government (own side of a pilot) |
+| `GET` | `/api/v1/messages/unread` | startup, government (own side of a pilot) |
+
+</details>
+
+<details>
 <summary><b>/api/v1/pipeline</b> (6 endpoints)</summary>
 
 | Method | Path | Who may call it |
@@ -456,7 +489,7 @@ Health probes: `GET /health` (liveness) and `GET /ready` (checks the database).
 
 PostgreSQL tables (all created by the idempotent migrations in `server/src/migrations/`):
 
-`access_requests`, `ai_audit_logs`, `ai_evaluations`, `audit_logs`, `auth_identities`, `challenge_addenda`, `challenge_questions`, `challenges`, `departments`, `files`, `finance_anomalies`, `finance_payment_claims`, `investor_intros`, `investor_profiles`, `invitations`, `kpi_submissions`, `notifications`, `organization_documents`, `organizations`, `password_resets`, `payment_file_templates`, `pending_signups`, `pilot_inspections`, `pilot_kpis`, `pilot_milestones`, `pilots`, `profile_links`, `proposal_appeals`, `proposals`, `risks`, `scaleup_plans`, `sessions`, `stalled_pilots`, `system_settings`, `tax_remittances`, `users`
+`access_requests`, `ai_audit_logs`, `ai_evaluations`, `audit_logs`, `auth_identities`, `challenge_addenda`, `challenge_questions`, `challenges`, `departments`, `files`, `finance_anomalies`, `finance_payment_claims`, `investor_intros`, `investor_profiles`, `invitations`, `kpi_submissions`, `message_threads`, `messages`, `notifications`, `organization_documents`, `organizations`, `password_resets`, `payment_file_templates`, `pending_signups`, `pilot_inspections`, `pilot_kpis`, `pilot_milestones`, `pilots`, `profile_links`, `proposal_appeals`, `proposals`, `risks`, `scaleup_plans`, `sessions`, `stalled_pilots`, `system_settings`, `tax_remittances`, `team_invites`, `thread_reads`, `users`
 
 Key rules: money columns are integer paise (`bigint`); `audit_logs` is append-only and hash-chained; `auth_identities` holds one row per linked sign-in provider; `access_requests` and `investor_profiles` back the approval flows.
 
@@ -473,9 +506,9 @@ Key rules: money columns are integer paise (`bigint`); `audit_logs` is append-on
 npm run typecheck && npm run lint && npm test
 ```
 
-135 backend tests cover: the full five-role procurement lifecycle and audit-chain integrity; per-role access boundaries; the tax engine; Google token verification; the GitHub flow with a mocked GitHub; onboarding for every role; email sign-up and confirmation; approval and rejection; pending-account lockout; investor isolation across every non-investor endpoint; introductions; linking; proposal links and drafts; the cheque lifecycle, two-person approval, segregation of duties and the tax ledger; bank-statement reconciliation; **bank payment files** (layouts, formula safety, no account numbers in the audit trail, segregation of duties); **scale-up recommendations and appeals** (two-person rule, windows, scoping); forgot-password and decision emails (mocked Brevo); mandatory staff two-step verification; the fail-closed CAPTCHA (mocked Cloudflare); document uploads (content checks, privacy, integrity, mocked Supabase Storage); the verification checklist and duplicate-detail flags; challenge Q&A and templates; pilot, proposal and challenge management; the assistant's scope fence; and the market feed. ### Browser tests
+148 backend tests cover: the full five-role procurement lifecycle and audit-chain integrity; per-role access boundaries; the tax engine; Google token verification; the GitHub flow with a mocked GitHub; onboarding for every role; email sign-up and confirmation; approval and rejection; pending-account lockout; investor isolation across every non-investor endpoint; introductions; linking; proposal links and drafts; the cheque lifecycle, two-person approval, segregation of duties and the tax ledger; bank-statement reconciliation; **bank payment files** (layouts, formula safety, no account numbers in the audit trail, segregation of duties); **scale-up recommendations and appeals** (two-person rule, windows, scoping); forgot-password and decision emails (mocked Brevo); mandatory staff two-step verification; the fail-closed CAPTCHA (mocked Cloudflare); document uploads (content checks, privacy, integrity, mocked Supabase Storage); the verification checklist and duplicate-detail flags; challenge Q&A and templates; pilot, proposal and challenge management; the assistant's scope fence; **startup teams** (invitations, owner-only actions, isolation, removal ending sessions), **in-app messaging** (privacy between sides, unread counts, closed threads, no message text in the audit trail), the **skip-for-now limits** on two-step verification, and the market feed. ### Browser tests
 
-`npm run e2e` (after `npm run build`) starts a guarded test server on an in-memory database and drives the real app in Chrome or Edge through 46 checks: the intro, role-first sign-in, GitHub for startups, email and Google sign-up, approvals, the cheque lifecycle, tax ledger, reconciliation, bank payment file, documents, drafts, Q&A, scale-up, appeals, forced staff two-step verification, and a phone-width check of the navigation drawer. It also writes dark-mode and phone screenshots to `e2e/screenshots/` for a quick visual review. Set `CHROME_PATH` if your browser is not found automatically; `E2E_PART=main` or `E2E_PART=sweep` runs half of it. The test server refuses to start when `NODE_ENV=production` and is never part of the deployed app.
+`npm run e2e` (after `npm run build`) starts a guarded test server on an in-memory database and drives the real app in Chrome or Edge through 61 checks: the intro, role-first sign-in, startup teams, messaging, GitHub for startups, email and Google sign-up, approvals, the cheque lifecycle, tax ledger, reconciliation, bank payment file, documents, drafts, Q&A, scale-up, appeals, forced staff two-step verification, and a phone-width check of the navigation drawer. It also writes dark-mode and phone screenshots to `e2e/screenshots/` for a quick visual review. Set `CHROME_PATH` if your browser is not found automatically; `E2E_PART=main` or `E2E_PART=sweep` runs half of it. The test server refuses to start when `NODE_ENV=production` and is never part of the deployed app.
 
 The suite also passes against a real PostgreSQL 16 (set `DATABASE_URL` and run with `--test-concurrency=1`). The interface has been exercised in a headless browser (themes, light/dark, GitHub sign-up wizard, approval, investor workspace, startup profile); the browser suite covers the main journeys, not every screen.
 
@@ -487,7 +520,7 @@ See **[docs/DEPLOY.md](docs/DEPLOY.md)** for Render + Supabase step by step, Goo
 
 **Not built yet (planned)**
 - Real **DPIIT / CIN / PAN / GSTIN / bank verification** through a government or commercial API (administrators verify manually with a checklist today), and direct treasury (PFMS) or bank integration beyond the payment files.
-- The longer ideas list: evaluation committees with scorecards, contract e-signing, an auditor role, several users per startup, in-app messaging, a mobile inspector app, regional languages, and so on.
+- The longer ideas list: evaluation committees with scorecards, contract e-signing, an auditor role, file attachments in messages, a mobile inspector app, regional languages, and so on.
 
 **Know before you rely on it**
 - Not independently security- or accessibility-audited. Treat as a prototype.

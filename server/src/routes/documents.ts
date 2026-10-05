@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { DatabaseAdapter } from '../db';
 import { AuditService } from '../audit';
 import { ObjectStore } from '../objectstore';
-import { AuthenticatedRequest, createAuthMiddleware, requireRole } from '../security';
+import { AuthenticatedRequest, createAuthMiddleware, requireRole, isOrgOwner } from '../security';
 
 /**
  * The statutory documents a startup uploads for verification: PDF only, 8 MB each, private, checked by an administrator.
@@ -43,6 +43,7 @@ export async function documentRoutes(app: FastifyInstance, opts: { db: DatabaseA
     const parsed = uploadSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'Choose the type of document and a PDF file.' });
     if (!authReq.user.organizationId) return reply.status(403).send({ error: 'No startup is linked to this account.' });
+    if (!(await isOrgOwner(db, authReq.user.userId))) return reply.status(403).send({ error: 'Only the account owner can upload verification documents.', code: 'OWNER_ONLY' });
     const buf = Buffer.from(parsed.data.contentBase64, 'base64');
     const problem = checkPdf(buf);
     if (problem) return reply.status(400).send({ error: problem, code: 'INVALID_DOCUMENT' });

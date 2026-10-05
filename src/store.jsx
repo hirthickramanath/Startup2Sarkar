@@ -180,7 +180,7 @@ function normalizeUser(u) {
   return {
     id: u.id, name: u.name, email: u.email, role: u.role, title: u.designation || '',
     department: u.department_name || u.organization_name || '', avatar: initials(u.name),
-    status: u.is_active === false ? 'Inactive' : 'Active', isActive: u.is_active !== false, mfaEnabled: !!u.mfa_enabled,
+    status: u.is_active === false ? 'Inactive' : 'Active', isActive: u.is_active !== false, mfaEnabled: !!(u.mfaEnabled ?? u.mfa_enabled), orgRole: u.orgRole ?? u.org_role ?? null,
     departmentId: u.department_id || null, createdAt: day(u.created_at), provider: u.auth_provider || 'password',
   };
 }
@@ -270,7 +270,7 @@ function shapeUser(u) {
     mustChangePassword: !!(u.mustChangePassword ?? u.must_change_password),
     mfaEnabled: !!(u.mfaEnabled ?? u.mfa_enabled),
     status: u.status || 'ACTIVE',
-    mfaEnrolRequired: !!(u.mfaEnrolRequired ?? u.mfa_enrol_required),
+    mfaEnrolRequired: !!(u.mfaEnrolRequired ?? u.mfa_enrol_required), mfaSkipsLeft: u.mfaSkipsLeft ?? u.mfa_skips_left ?? 0, orgRole: u.orgRole ?? u.org_role ?? null,
     hasPassword: u.hasPassword ?? u.has_password,
   };
 }
@@ -350,6 +350,12 @@ export function AuthProvider({ children }) {
     return finishLogin(r);
   }, [finishLogin]);
 
+  const joinTeam = useCallback(async (payload) => {
+    setLoginError(null);
+    const r = await authApi.join(payload);
+    return finishLogin(r);
+  }, [finishLogin]);
+
   const verifyMfa = useCallback(async (code) => {
     if (!mfaChallenge) return { error: 'No MFA challenge active' };
     setLoginError(null);
@@ -372,9 +378,9 @@ export function AuthProvider({ children }) {
 
   const value = useMemo(() => ({
     user, isAuthenticated: !!user, isLoading, loginError, mfaChallenge, config,
-    login, loginWithGoogle, completeOnboarding, verifyMfa, logout, refreshUser, setLoginError,
+    login, loginWithGoogle, completeOnboarding, joinTeam, verifyMfa, logout, refreshUser, setLoginError,
     cancelMfa: () => setMfaChallenge(null),
-  }), [user, isLoading, loginError, mfaChallenge, config, login, loginWithGoogle, completeOnboarding, verifyMfa, logout, refreshUser]);
+  }), [user, isLoading, loginError, mfaChallenge, config, login, loginWithGoogle, completeOnboarding, joinTeam, verifyMfa, logout, refreshUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
@@ -661,7 +667,7 @@ export function useApp() {
 export function shouldShowIntro() {
   try {
     const { pathname, search, hash } = window.location;
-    if (pathname === '/signup' || pathname === '/reset-password') return false;
+    if (pathname === '/signup' || pathname === '/reset-password' || pathname === '/join') return false;
     if (/[?&]error=/.test(search) || /mfa=/.test(hash)) return false;
   } catch { /* no window */ }
   return true;

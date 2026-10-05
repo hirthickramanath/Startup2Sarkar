@@ -4,6 +4,9 @@ import { authApi } from './api';
 import { LoginPage } from './components/auth/LoginPage';
 import { Onboarding, AccessPending } from './components/auth/Onboarding';
 import { ResetPassword } from './components/auth/ResetPassword';
+import { JoinTeam } from './components/auth/JoinTeam';
+import { StartupTeam } from './components/roles/startup/StartupTeam';
+import { MessagesPage } from './components/common/Messages';
 import { MfaEnrol } from './components/auth/MfaEnrol';
 import { AccountSecurity } from './components/common/AccountSecurity';
 import { InvestorDashboard, InvestorStartups, InvestorIntros, InvestorProfile } from './components/roles/investor/Investor';
@@ -91,6 +94,8 @@ const ROUTES = [
   ['/finance/reports', 'Case files', () => <FinanceReports />],
 
   ['/account', 'Account security', () => <AccountSecurity />],
+  ['/messages', 'Messages', () => <MessagesPage />],
+  ['/startup/team', 'Team', () => <StartupTeam />],
   ['/investor/dashboard', 'Investor workspace', () => <InvestorDashboard />],
   ['/investor/startups', 'Startup directory', () => <InvestorStartups />],
   ['/investor/intros', 'My introductions', () => <InvestorIntros />],
@@ -198,6 +203,7 @@ export default function App() {
   if (!isAuthenticated) {
     if (currentRoute === '/signup') return <><Onboarding /><ToastHost /></>;
     if (currentRoute === '/reset-password') return <><ResetPassword /><ToastHost /></>;
+    if (currentRoute === '/join') return <><JoinTeam /><ToastHost /></>;
     const m = currentRoute.match(/^\/login\/([a-z]+)/);
     return <><LoginPage initialRole={m ? m[1] : null} /><ToastHost /></>;
   }
@@ -207,7 +213,7 @@ export default function App() {
   if (currentRoute === '/' || currentRoute.startsWith('/login') || currentRoute === '/signup') return null;
 
   // Role gate (the server enforces this independently; this just gives a friendly screen)
-  const allowed = user.role === 'admin' || currentRoute.startsWith(`/${user.role}/`) || currentRoute === `/${user.role}` || currentRoute === '/account';
+  const allowed = user.role === 'admin' || currentRoute.startsWith(`/${user.role}/`) || currentRoute === `/${user.role}` || currentRoute === '/account' || currentRoute === '/messages';
   const match = allowed ? matchRoute(currentRoute) : null;
 
   return (

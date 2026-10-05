@@ -227,7 +227,7 @@ export function createAuthMiddleware(db: DatabaseAdapter) {
 
     // Verify session still exists in database and user is active
     const sessionRes = await db.query(
-      `SELECT s.id, u.is_active, u.status, u.mfa_enabled, u.role, u.department_id, u.organization_id
+      `SELECT s.id, u.is_active, u.status, u.mfa_enabled, u.mfa_snoozed_until, u.role, u.department_id, u.organization_id
        FROM sessions s
        JOIN users u ON s.user_id = u.id
        WHERE s.id = $1 AND s.expires_at > CURRENT_TIMESTAMP`,
@@ -253,7 +253,7 @@ export function createAuthMiddleware(db: DatabaseAdapter) {
     }
 
     // Staff must have two-step verification before they can reach any data
-    if (staffMfaRequired() && STAFF_ROLES.includes(sessionRes.rows[0].role) && !sessionRes.rows[0].mfa_enabled) {
+    if (mfaEnrolmentRequired(sessionRes.rows[0])) {
       const path = request.url.split('?')[0];
       if (!path.startsWith('/api/v1/auth/')) {
         return reply.status(403).send({ error: 'Turn on two-step verification to continue.', code: 'MFA_ENROLMENT_REQUIRED' });
@@ -285,6 +285,20 @@ export const STAFF_ROLES = ['government', 'finance', 'inspector', 'admin'];
 export function staffMfaRequired(): boolean {
   const v = process.env.REQUIRE_STAFF_MFA;
   return v ? v === 'true' : process.env.NODE_ENV === 'production';
+}
+/** How many times staff may postpone two-step verification, and for how long each time. */
+export const MFA_MAX_SKIPS = Number(process.env.MFA_MAX_SKIPS || 5);
+export const MFA_SKIP_HOURS = 24;
+/** Is this person currently required to set up two-step verification? (A recent "skip for now" pauses it.) */
+export function mfaEnrolmentRequired(u: { role: string; mfa_enabled?: boolean; mfa_snoozed_until?: any; status?: string }): boolean {
+  if (!staffMfaRequired() || !STAFF_ROLES.includes(u.role) || u.mfa_enabled) return false;
+  if (u.status && u.status !== 'ACTIVE') return false;
+  return !(u.mfa_snoozed_until && new Date(u.mfa_snoozed_until).getTime() > Date.now());
+}
+/** The account owner of a startup (people who joined by invitation are MEMBERs). */
+export async function isOrgOwner(db: DatabaseAdapter, userId: string): Promise<boolean> {
+  const r = (await db.query('SELECT org_role FROM users WHERE id = $1', [userId])).rows[0];
+  return !!r && r.org_role !== 'MEMBER';
 }
 export type RoleName = 'government' | 'startup' | 'inspector' | 'finance' | 'admin' | 'investor';
 export function requireRole(...allowedRoles: RoleName[]) {

@@ -3,7 +3,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { DatabaseAdapter } from '../db';
 import { AuditService } from '../audit';
-import { AuthenticatedRequest, createAuthMiddleware, requireRole } from '../security';
+import { AuthenticatedRequest, createAuthMiddleware, requireRole, isOrgOwner } from '../security';
 
 /**
  * Investor network. Deliberately small and walled off:
@@ -153,6 +153,7 @@ export async function networkRoutes(app: FastifyInstance, opts: { db: DatabaseAd
   // ── Startup: showcase settings and inbox ──
   app.put('/showcase', { preHandler: [authenticate, requireRole('startup')] }, async (request, reply) => {
     const authReq = request as AuthenticatedRequest;
+    if (!(await isOrgOwner(db, authReq.user.userId))) return reply.status(403).send({ error: 'Only the account owner can manage investor visibility and introductions.', code: 'OWNER_ONLY' });
     const parsed = z.object({ optIn: z.boolean(), summary: z.string().trim().max(400).optional() }).safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'Invalid showcase settings' });
     if (parsed.data.optIn && (parsed.data.summary || '').length < 20) {
@@ -186,6 +187,7 @@ export async function networkRoutes(app: FastifyInstance, opts: { db: DatabaseAd
 
   app.post('/incoming/:id/respond', { preHandler: [authenticate, requireRole('startup')] }, async (request, reply) => {
     const authReq = request as AuthenticatedRequest;
+    if (!(await isOrgOwner(db, authReq.user.userId))) return reply.status(403).send({ error: 'Only the account owner can manage investor visibility and introductions.', code: 'OWNER_ONLY' });
     const parsed = z.object({ accept: z.boolean() }).safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'Say whether you accept or decline' });
     const intro = (await db.query('SELECT id, status, investor_user_id FROM investor_intros WHERE id = $1 AND organization_id = $2', [(request.params as any).id, authReq.user.organizationId])).rows[0];

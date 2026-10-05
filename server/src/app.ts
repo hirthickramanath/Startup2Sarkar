@@ -26,6 +26,8 @@ import { identityRoutes } from './routes/identity';
 import { networkRoutes } from './routes/network';
 import { documentRoutes } from './routes/documents';
 import { pipelineRoutes } from './routes/pipeline';
+import { teamRoutes } from './routes/team';
+import { messageRoutes } from './routes/messages';
 import { createObjectStore, ObjectStore } from './objectstore';
 import { publicRoutes, fileRoutes, notificationRoutes, searchRoutes, auditViewRoutes } from './routes/platform';
 
@@ -152,6 +154,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     api.register(authRoutes, { prefix: '/auth', db, auditService, captchaFetch: options.captchaFetch });
     api.register(identityRoutes, { prefix: '/auth', db, auditService, jwksFetcher: options.jwksFetcher, githubFetch: options.githubFetch, emailProvider, captchaFetch: options.captchaFetch });
     api.register(networkRoutes, { prefix: '/network', db, auditService });
+    api.register(teamRoutes, { prefix: '/team', db, auditService, emailProvider });
+    api.register(messageRoutes, { prefix: '/messages', db, auditService });
     api.register(pipelineRoutes, { prefix: '/pipeline', db, auditService });
     api.register(documentRoutes, { prefix: '/documents', db, auditService, objectStore: options.objectStore ?? createObjectStore() });
     api.register(challengeRoutes, { prefix: '/challenges', db, auditService, aiProvider });
